@@ -62,7 +62,7 @@ def main(stdscr, hosts):
 
     while True:
         h, w = stdscr.getmaxyx()
-        col_w = w // 3
+        col_w = w // len(hosts)
         visible = h - 3  # header + separator + footer
 
         stdscr.erase()
@@ -123,11 +123,11 @@ def main(stdscr, hosts):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 4:
-        print(f'Usage: {sys.argv[0]} <host1> <host2> <host3>')
+    if len(sys.argv) < 2:
+        print(f'Usage: {sys.argv[0]} <host1> [host2] [host3] ...')
         sys.exit(1)
 
     try:
-        curses.wrapper(main, sys.argv[1:4])
+        curses.wrapper(main, sys.argv[1:])
     except KeyboardInterrupt:
         pass
