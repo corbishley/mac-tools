@@ -31,6 +31,25 @@ def ping_host(host, state):
         state['history'].append(val)
 
 
+def compute_stats(history, window=300):
+    recent = list(history)[-window:]
+    total = len(recent)
+    if total == 0:
+        return None, None
+    drops = sum(1 for v in recent if v in ('timeout', 'unreachable'))
+    drop_pct = (drops / total) * 100
+    ms_values = sorted(
+        float(v.split()[0]) for v in recent
+        if v not in ('timeout', 'unreachable')
+    )
+    if ms_values:
+        n = len(ms_values)
+        median = (ms_values[n // 2 - 1] + ms_values[n // 2]) / 2 if n % 2 == 0 else ms_values[n // 2]
+    else:
+        median = None
+    return median, drop_pct
+
+
 def time_color(val):
     try:
         ms = float(val.split()[0])
@@ -63,7 +82,7 @@ def main(stdscr, hosts):
     while True:
         h, w = stdscr.getmaxyx()
         col_w = w // len(hosts)
-        visible = h - 3  # header + separator + footer
+        visible = h - 6  # header + sep + median + drop + sep + footer
 
         stdscr.erase()
 
@@ -86,6 +105,31 @@ def main(stdscr, hosts):
         except curses.error:
             pass
 
+        # Stats rows — median and drop% over last 300 pings (~1 min)
+        for i in range(len(hosts)):
+            x = i * col_w
+            for row in (2, 3):
+                if i > 0:
+                    try:
+                        stdscr.addch(row, x - 1, '│')
+                    except curses.error:
+                        pass
+            median, drop_pct = compute_stats(states[i]['history'])
+            med_str = f'med {median:.1f}ms' if median is not None else 'med ---'
+            drop_str = f'drp {drop_pct:.1f}%' if drop_pct is not None else 'waiting...'
+            drop_color = curses.color_pair(4) if (drop_pct or 0) > 5 else curses.A_BOLD
+            try:
+                stdscr.addstr(2, x + 1, med_str[:col_w - 2], curses.A_BOLD)
+                stdscr.addstr(3, x + 1, drop_str[:col_w - 2], drop_color | curses.A_BOLD)
+            except curses.error:
+                pass
+
+        # Separator
+        try:
+            stdscr.addstr(4, 0, '─' * (w - 1))
+        except curses.error:
+            pass
+
         # Scrolling history — most recent at top
         for i in range(len(hosts)):
             x = i * col_w
@@ -93,7 +137,7 @@ def main(stdscr, hosts):
             entries = list(reversed(history[-visible:]))
 
             for j, val in enumerate(entries):
-                row = 2 + j
+                row = 5 + j
                 if i > 0:
                     try:
                         stdscr.addch(row, x - 1, '│')
