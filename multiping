@@ -10,9 +10,9 @@ from collections import deque
 MAX_HISTORY = 10000
 
 
-def ping_host(host, state):
+def ping_host(host, interval, state):
     proc = subprocess.Popen(
-        ['ping', '-i', '0.2', host],
+        ['ping', '-i', str(interval), host],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -29,13 +29,14 @@ def ping_host(host, state):
         else:
             continue
         state['history'].append(val)
+        state['dirty'] = True
 
 
-def compute_stats(history, window=300):
+def compute_stats(history, window):
     recent = list(history)[-window:]
     total = len(recent)
     if total == 0:
-        return None, None
+        return None, None, None, None
     drops = sum(1 for v in recent if v in ('timeout', 'unreachable'))
     drop_pct = (drops / total) * 100
     ms_values = sorted(
@@ -45,9 +46,11 @@ def compute_stats(history, window=300):
     if ms_values:
         n = len(ms_values)
         median = (ms_values[n // 2 - 1] + ms_values[n // 2]) / 2 if n % 2 == 0 else ms_values[n // 2]
+        avg = sum(ms_values) / n
+        p95 = ms_values[min(int(0.95 * n), n - 1)]
     else:
-        median = None
-    return median, drop_pct
+        median = avg = p95 = None
+    return median, avg, p95, drop_pct
 
 
 def time_color(val):
@@ -63,7 +66,7 @@ def time_color(val):
         return curses.color_pair(4)
 
 
-def main(stdscr, hosts):
+def main(stdscr, hosts, interval):
     curses.curs_set(0)
     stdscr.nodelay(True)
     curses.start_color()
@@ -73,16 +76,26 @@ def main(stdscr, hosts):
     curses.init_pair(3, curses.COLOR_YELLOW, -1)
     curses.init_pair(4, curses.COLOR_RED, -1)
 
-    states = [{'history': deque(maxlen=MAX_HISTORY), 'proc': None} for _ in hosts]
+    # stats window covers ~60 seconds of pings
+    stat_window = max(10, int(60 / interval))
+
+    states = [{'history': deque(maxlen=MAX_HISTORY), 'proc': None, 'dirty': True,
+                'cached_stats': (None, None, None, None)} for _ in hosts]
 
     for i, host in enumerate(hosts):
-        t = threading.Thread(target=ping_host, args=(host, states[i]), daemon=True)
+        t = threading.Thread(target=ping_host, args=(host, interval, states[i]), daemon=True)
         t.start()
 
     while True:
+        # Recompute stats only when new pings have arrived
+        for state in states:
+            if state['dirty']:
+                state['cached_stats'] = compute_stats(state['history'], stat_window)
+                state['dirty'] = False
+
         h, w = stdscr.getmaxyx()
         col_w = w // len(hosts)
-        visible = h - 6  # header + sep + median + drop + sep + footer
+        visible = h - 8  # header + sep + med + avg + p95 + drop + sep + footer
 
         stdscr.erase()
 
@@ -105,28 +118,32 @@ def main(stdscr, hosts):
         except curses.error:
             pass
 
-        # Stats rows — median and drop% over last 300 pings (~1 min)
+        # Stats rows — med, avg, p95, drop% over last ~60s of pings
         for i in range(len(hosts)):
             x = i * col_w
-            for row in (2, 3):
+            for row in (2, 3, 4, 5):
                 if i > 0:
                     try:
                         stdscr.addch(row, x - 1, '│')
                     except curses.error:
                         pass
-            median, drop_pct = compute_stats(states[i]['history'])
+            median, avg, p95, drop_pct = states[i]['cached_stats']
             med_str = f'med {median:.1f}ms' if median is not None else 'med ---'
+            avg_str = f'avg {avg:.1f}ms' if avg is not None else 'avg ---'
+            p95_str = f'p95 {p95:.1f}ms' if p95 is not None else 'p95 ---'
             drop_str = f'drp {drop_pct:.1f}%' if drop_pct is not None else 'waiting...'
             drop_color = curses.color_pair(4) if (drop_pct or 0) > 5 else curses.A_BOLD
             try:
                 stdscr.addstr(2, x + 1, med_str[:col_w - 2], curses.A_BOLD)
-                stdscr.addstr(3, x + 1, drop_str[:col_w - 2], drop_color | curses.A_BOLD)
+                stdscr.addstr(3, x + 1, avg_str[:col_w - 2], curses.A_BOLD)
+                stdscr.addstr(4, x + 1, p95_str[:col_w - 2], curses.A_BOLD)
+                stdscr.addstr(5, x + 1, drop_str[:col_w - 2], drop_color | curses.A_BOLD)
             except curses.error:
                 pass
 
         # Separator
         try:
-            stdscr.addstr(4, 0, '─' * (w - 1))
+            stdscr.addstr(6, 0, '─' * (w - 1))
         except curses.error:
             pass
 
@@ -137,7 +154,7 @@ def main(stdscr, hosts):
             entries = list(reversed(history[-visible:]))
 
             for j, val in enumerate(entries):
-                row = 5 + j
+                row = 7 + j
                 if i > 0:
                     try:
                         stdscr.addch(row, x - 1, '│')
@@ -163,15 +180,25 @@ def main(stdscr, hosts):
                     state['proc'].terminate()
             break
 
-        time.sleep(0.05)
+        time.sleep(0.5)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print(f'Usage: {sys.argv[0]} <host1> [host2] [host3] ...')
+    if len(sys.argv) < 3:
+        print(f'Usage: {sys.argv[0]} <interval_secs> <host1> [host2] ...')
         sys.exit(1)
 
     try:
-        curses.wrapper(main, sys.argv[1:])
+        interval = float(sys.argv[1])
+    except ValueError:
+        print(f'Error: interval must be a number (e.g. 1 or 0.5)')
+        sys.exit(1)
+
+    if interval < 0.2:
+        print('Error: interval must be >= 0.2 seconds')
+        sys.exit(1)
+
+    try:
+        curses.wrapper(main, sys.argv[2:], interval)
     except KeyboardInterrupt:
         pass
