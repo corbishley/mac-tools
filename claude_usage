@@ -1,0 +1,510 @@
+#!/bin/bash
+# Reports Claude usage, GitHub Actions spend, Render.com build minutes,
+# Neon database, and Cloudflare usage.
+# Reads Claude OAuth token from macOS keychain — no TUI interaction needed.
+# Other API keys: read from env vars, with macOS keychain fallback.
+#   Neon:       NEON_API_KEY  or  security add-generic-password -s "neon-api-key" -a "$USER" -w "key"
+#   Cloudflare: CF_API_TOKEN  or  security add-generic-password -s "cloudflare-api-token" -a "$USER" -w "key"
+#   Render:     RENDER_API_KEY (env only)
+
+set -uo pipefail
+
+# --- Get OAuth token from keychain ---
+CREDS=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || {
+    echo "Error: Could not read Claude credentials from keychain" >&2
+    exit 1
+}
+
+TOKEN=$(python3 -c "
+import sys, json
+d = json.loads('''$CREDS''')
+print(d['claudeAiOauth']['accessToken'])
+") || {
+    echo "Error: Could not parse OAuth token" >&2
+    exit 1
+}
+
+# --- Keychain fallback for service API keys ---
+# These supplement env vars — keychain wins if env var is empty.
+if [[ -z "${NEON_API_KEY:-}" ]]; then
+    NEON_API_KEY=$(security find-generic-password -s "neon-api-key" -w 2>/dev/null) || true
+fi
+if [[ -z "${CF_API_TOKEN:-}" ]]; then
+    CF_API_TOKEN=$(security find-generic-password -s "cloudflare-api-token" -w 2>/dev/null) || true
+fi
+export NEON_API_KEY CF_API_TOKEN
+
+# --- Call the Claude usage API ---
+RESPONSE=$(curl -sf \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "anthropic-beta: oauth-2025-04-20" \
+    -H "User-Agent: claude-code/$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" \
+    "https://api.anthropic.com/api/oauth/usage") || {
+    echo "Error: Claude API request failed" >&2
+    exit 1
+}
+
+# --- GitHub Actions billing ---
+get_gh_actions_billing() {
+    local data
+    # gh api writes error JSON to stdout on 4xx, so capture and only emit on success
+    data=$(gh api /orgs/${GITHUB_ORG}/settings/billing/actions 2>/dev/null) && { echo "$data"; return; }
+    data=$(gh api /users/${GITHUB_ORG}/settings/billing/actions 2>/dev/null) && { echo "$data"; return; }
+    echo '{"total_minutes_used":0,"included_minutes":2000,"minutes_used_breakdown":{}}'
+}
+
+# --- Render.com build minutes ---
+RENDER_ALLOWANCE=500
+
+get_render_minutes() {
+    local api_key="${RENDER_API_KEY:-}"
+    [[ -z "$api_key" ]] && echo 0 && return
+
+    local month_start_iso
+    month_start_iso=$(python3 -c "
+from datetime import datetime, timezone
+n = datetime.now(timezone.utc)
+print(f'{n.year}-{n.month:02d}-01T00:00:00+00:00')
+")
+
+    # Get all services
+    local service_ids
+    service_ids=$(curl -sf \
+        -H "Authorization: Bearer $api_key" \
+        "https://api.render.com/v1/services?limit=100" | \
+        python3 -c "import json,sys; [print(s['service']['id']) for s in json.load(sys.stdin)]" 2>/dev/null) || return 0
+
+    local total_ms=0
+    for svc_id in $service_ids; do
+        local deploy_ms_list
+        deploy_ms_list=$(curl -sf \
+            -H "Authorization: Bearer $api_key" \
+            "https://api.render.com/v1/services/${svc_id}/deploys?limit=100" | \
+            python3 -c "
+import json, sys
+from datetime import datetime, timezone
+month_start = datetime.fromisoformat('${month_start_iso}')
+for item in json.load(sys.stdin):
+    d = item.get('deploy', item)
+    started  = d.get('startedAt') or d.get('createdAt', '')
+    finished = d.get('finishedAt', '')
+    if not started or not finished:
+        continue
+    try:
+        st = datetime.fromisoformat(started.replace('Z',  '+00:00'))
+        ft = datetime.fromisoformat(finished.replace('Z', '+00:00'))
+        if st >= month_start:
+            print(max(0, int((ft - st).total_seconds() * 1000)))
+    except:
+        pass
+" 2>/dev/null) || continue
+
+        for ms in $deploy_ms_list; do
+            local billable_ms
+            billable_ms=$(python3 -c "
+import math; print(math.ceil(${ms} / 60000) * 60000)
+" 2>/dev/null) || continue
+            total_ms=$((total_ms + billable_ms))
+        done
+    done
+
+    echo $((total_ms / 60000))
+}
+
+# --- Neon ---
+NEON_COMPUTE_ALLOWANCE_CU_SECS=$((100 * 3600))        # 100 CU-hours per project
+NEON_STORAGE_ALLOWANCE_BYTES=$((512 * 1024 * 1024))    # 0.5 GiB per project
+NEON_TRANSFER_ALLOWANCE_BYTES=$((5 * 1024 * 1024 * 1024)) # 5 GiB account-wide
+
+get_neon_projects() {
+    local api_key="${NEON_API_KEY:-}"
+    [[ -z "$api_key" ]] && echo '{"projects":[]}' && return
+
+    NEON_API_KEY="$api_key" python3 << 'NEONPY'
+import json, sys, os, urllib.request, urllib.error
+
+token = os.environ.get('NEON_API_KEY', '')
+
+def neon_get(path):
+    req = urllib.request.Request(
+        f'https://console.neon.tech/api/v2{path}',
+        headers={'Authorization': f'Bearer {token}'}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read()), r.status
+    except urllib.error.HTTPError as e:
+        return {}, e.code
+    except Exception:
+        return {}, 0
+
+all_projects = []
+
+# Try personal projects; if the account is org-scoped the API returns 400
+data, status = neon_get('/projects?limit=100')
+if status == 200:
+    all_projects.extend(data.get('projects', []))
+else:
+    orgs_data, _ = neon_get('/users/me/organizations')
+    for org in orgs_data.get('organizations', []):
+        proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
+        all_projects.extend(proj_data.get('projects', []))
+
+print(json.dumps({'projects': all_projects}))
+NEONPY
+}
+
+get_neon_branch_storage() {
+    local api_key="${NEON_API_KEY:-}"
+    local project_id="$1"
+    [[ -z "$api_key" ]] && echo 0 && return
+
+    curl -sf \
+        -H "Authorization: Bearer $api_key" \
+        "https://console.neon.tech/api/v2/projects/${project_id}/branches" 2>/dev/null | \
+        python3 -c "
+import json, sys
+try:
+    b = json.load(sys.stdin).get('branches', [])
+    print(sum(x.get('logical_size', 0) or 0 for x in b))
+except:
+    print(0)
+" 2>/dev/null || echo 0
+}
+
+# --- Cloudflare ---
+CF_PAGES_ALLOWANCE=500
+CF_WORKERS_DAILY_ALLOWANCE=100000
+
+get_cf_data() {
+    local api_token="${CF_API_TOKEN:-}"
+    if [[ -z "$api_token" ]]; then
+        echo '{"pages_builds":0,"workers_requests":0,"has_key":false}'
+        return
+    fi
+
+    CF_API_TOKEN="$api_token" python3 << 'CFPY'
+import json, sys, os, urllib.request
+from datetime import datetime, timezone
+
+token = os.environ.get('CF_API_TOKEN', '')
+now = datetime.now(timezone.utc)
+month_start_dt = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+day_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+day_end   = datetime(now.year, now.month, now.day, 23, 59, 59, tzinfo=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+def cf_get(path):
+    req = urllib.request.Request(
+        f'https://api.cloudflare.com/client/v4{path}',
+        headers={'Authorization': f'Bearer {token}'}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+    except Exception:
+        return {}
+
+# Account ID
+result = cf_get('/accounts?per_page=1').get('result', [])
+if not result:
+    print(json.dumps({'pages_builds': 0, 'workers_requests': 0, 'has_key': True}))
+    sys.exit(0)
+account_id = result[0]['id']
+
+# Pages builds this month
+total_builds = 0
+for proj in cf_get(f'/accounts/{account_id}/pages/projects?per_page=100').get('result', []):
+    pname = proj['name']
+    for d in cf_get(f'/accounts/{account_id}/pages/projects/{pname}/deployments?per_page=100').get('result', []):
+        try:
+            dt = datetime.fromisoformat(d.get('created_on', '').replace('Z', '+00:00'))
+            if dt >= month_start_dt:
+                total_builds += 1
+        except Exception:
+            pass
+
+# Workers requests today via GraphQL
+workers_requests = 0
+try:
+    query = json.dumps({'query': '''{
+  viewer {
+    accounts(filter: {accountTag: "%s"}) {
+      workersInvocationsAdaptive(
+        limit: 10000
+        filter: {datetime_geq: "%s", datetime_leq: "%s"}
+      ) { sum { requests } }
+    }
+  }
+}''' % (account_id, day_start, day_end)})
+    req = urllib.request.Request(
+        'https://api.cloudflare.com/client/v4/graphql',
+        data=query.encode(),
+        headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        gql = json.loads(r.read())
+        for a in gql.get('data', {}).get('viewer', {}).get('accounts', []):
+            for w in a.get('workersInvocationsAdaptive', []):
+                workers_requests += w.get('sum', {}).get('requests', 0)
+except Exception:
+    pass
+
+print(json.dumps({'pages_builds': total_builds, 'workers_requests': workers_requests, 'has_key': True}))
+CFPY
+}
+
+printf "Fetching GitHub Actions usage..." >&2
+GH_BILLING=$(get_gh_actions_billing)
+printf "\r\033[K" >&2
+
+printf "Fetching Render.com usage..." >&2
+RENDER_MINS=$(get_render_minutes)
+printf "\r\033[K" >&2
+
+printf "Fetching Cloudflare usage..." >&2
+CF_DATA=$(get_cf_data)
+printf "\r\033[K" >&2
+
+printf "Fetching Neon usage..." >&2
+NEON_PROJECTS_RAW=$(get_neon_projects)
+NEON_STORAGE_JSON="{}"
+if [[ "${NEON_API_KEY:-}" != "" ]]; then
+    while IFS= read -r proj_id; do
+        [[ -z "$proj_id" ]] && continue
+        sb=$(get_neon_branch_storage "$proj_id")
+        NEON_STORAGE_JSON=$(python3 -c "
+import json
+m = json.loads('$NEON_STORAGE_JSON')
+m['$proj_id'] = $sb
+print(json.dumps(m))
+")
+    done < <(echo "$NEON_PROJECTS_RAW" | python3 -c "
+import json, sys
+for p in json.load(sys.stdin).get('projects', []):
+    print(p['id'])
+" 2>/dev/null)
+fi
+printf "\r\033[K" >&2
+
+# --- Display ---
+clear
+python3 << PYEOF
+import json, sys, math
+from datetime import datetime, timezone
+
+data = json.loads('''$RESPONSE''')
+gh_billing     = json.loads('''$GH_BILLING''')
+gh_total_mins  = gh_billing.get('total_minutes_used', 0)
+gh_allowance   = gh_billing.get('included_minutes', 2000)
+gh_breakdown   = gh_billing.get('minutes_used_breakdown', {})
+render_mins    = $RENDER_MINS
+render_allowance = $RENDER_ALLOWANCE
+cf_data            = json.loads('''$CF_DATA''')
+neon_projects_raw  = json.loads('''$NEON_PROJECTS_RAW''')
+neon_storage_map   = json.loads('''$NEON_STORAGE_JSON''')
+cf_pages_allowance           = $CF_PAGES_ALLOWANCE
+cf_workers_daily_allowance   = $CF_WORKERS_DAILY_ALLOWANCE
+neon_compute_allowance_secs    = $NEON_COMPUTE_ALLOWANCE_CU_SECS
+neon_storage_allowance_bytes   = $NEON_STORAGE_ALLOWANCE_BYTES
+neon_transfer_allowance_bytes  = $NEON_TRANSFER_ALLOWANCE_BYTES
+
+neon_projects = neon_projects_raw.get('projects', [])
+LABEL_W = max(
+    21,  # len("Egress (account-wide)")
+    max((len(p.get('name', p['id'])) + 8 for p in neon_projects), default=0),  # +8 for " compute"
+)
+
+def fmt_duration(secs):
+    d = secs // 86400
+    h = (secs % 86400) // 3600
+    m = (secs % 3600) // 60
+    parts = []
+    if d: parts.append(f"{d}d")
+    if h: parts.append(f"{h}h")
+    parts.append(f"{m}m")
+    return " ".join(parts)
+
+def fmt_abs(dt):
+    return dt.astimezone().strftime("%a %H:%M")
+
+def traffic_light(time_frac, usage_frac):
+    elapsed_frac = 1.0 - time_frac
+    diff = elapsed_frac - usage_frac
+    if diff >= -0.01:
+        return "🟢"
+    elif diff >= -0.1:
+        return "🟠"
+    else:
+        return "🔴"
+
+def bar(usage_frac, elapsed_frac, width=20):
+    usage_pos   = min(int(usage_frac   * width), width)
+    elapsed_pos = min(int(elapsed_frac * width), width)
+    chars = []
+    for i in range(width):
+        top = i < usage_pos
+        bot = i < elapsed_pos
+        if top and bot:   chars.append('█')
+        elif top:         chars.append('▀')
+        elif bot:         chars.append('▄')
+        else:             chars.append('-')
+    return "".join(chars)
+
+def fmt_claude_window(label, d, window_secs):
+    if not d or d.get('utilization') is None:
+        return
+    pct       = d['utilization']
+    if not isinstance(d.get('resets_at'), str):
+        return
+    resets_at = datetime.fromisoformat(d['resets_at'])
+    now       = datetime.now(timezone.utc)
+    secs_left = int((resets_at - now).total_seconds())
+
+    if secs_left < 0:
+        reset_str  = "resetting soon"
+        time_frac  = 0.0
+    else:
+        reset_str = f"resets {fmt_abs(resets_at)} (in {fmt_duration(secs_left)})"
+        time_frac = secs_left / window_secs
+
+    usage_frac   = pct / 100
+    elapsed_frac = 1.0 - time_frac
+    light        = traffic_light(time_frac, usage_frac)
+    b            = bar(usage_frac, elapsed_frac)
+
+    print(f"{light} {label.strip():<{LABEL_W}} : {b}  {pct:3.0f}% used  {elapsed_frac*100:3.0f}% time elapsed  {reset_str}")
+
+# ── Claude Usage ──────────────────────────────────────────────
+print("── Claude ───────────────────────────────────────────────────────")
+fmt_claude_window("5-hour ", data.get("five_hour"),  5 * 3600)
+fmt_claude_window("7-day  ", data.get("seven_day"), 7 * 24 * 3600)
+
+extra = data.get("extra_usage", {})
+if extra and extra.get("is_enabled") and extra.get("utilization") is not None:
+    print(f"   Extra:  {extra['utilization']:.0f}% of monthly add-on used")
+
+# ── GitHub Actions ────────────────────────────────────────────
+print()
+print()
+print("── GitHub Actions (${GITHUB_ORG}, free tier) ──────────────────")
+
+now = datetime.now(timezone.utc)
+# Month boundaries
+month_start_dt = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+if now.month == 12:
+    month_end_dt = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+else:
+    month_end_dt = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+
+month_secs     = (month_end_dt - month_start_dt).total_seconds()
+elapsed_secs   = (now - month_start_dt).total_seconds()
+remaining_secs = (month_end_dt - now).total_seconds()
+
+elapsed_frac   = elapsed_secs / month_secs
+time_frac      = remaining_secs / month_secs  # fraction of month still remaining
+usage_frac     = gh_total_mins / gh_allowance
+
+light = traffic_light(time_frac, usage_frac)
+b     = bar(usage_frac, elapsed_frac)
+reset_str = f"resets {month_end_dt.astimezone().strftime('%b %d')} (in {fmt_duration(int(remaining_secs))})"
+
+print(f"{light} {'Total':<{LABEL_W}} : {b}  {gh_total_mins:4d}/{gh_allowance} min ({usage_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {reset_str}")
+breakdown_parts = [f"{k.capitalize()}: {v} min" for k, v in gh_breakdown.items() if v]
+if breakdown_parts:
+    print(f"  {'':{LABEL_W + 4}}{',   '.join(breakdown_parts)}")
+
+# ── Render.com ────────────────────────────────────────────────
+print()
+print()
+print("── Render.com (${GITHUB_ORG}, free tier) ──────────────────────")
+
+r_usage_frac   = render_mins / render_allowance
+r_light        = traffic_light(time_frac, r_usage_frac)
+r_b            = bar(r_usage_frac, elapsed_frac)
+r_reset_str    = f"resets {month_end_dt.astimezone().strftime('%b %d')} (in {fmt_duration(int(remaining_secs))})"
+
+print(f"{r_light} {'Build':<{LABEL_W}} : {r_b}  {render_mins:4d}/{render_allowance} min ({r_usage_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {r_reset_str}")
+
+# ── Neon ──────────────────────────────────────────────────────────
+print()
+print()
+print("── Neon (free tier) ─────────────────────────────────────────────")
+
+if not neon_projects:
+    print("   (set NEON_API_KEY to see Neon usage)")
+else:
+    total_transfer_bytes = sum(p.get('data_transfer_bytes', 0) or 0 for p in neon_projects)
+
+    for p in neon_projects:
+        pname = p.get('name', p['id'])
+        compute_secs = p.get('compute_time_seconds', 0) or 0
+        compute_cu_h = compute_secs / 3600
+        compute_frac = compute_secs / neon_compute_allowance_secs
+
+        storage_bytes = neon_storage_map.get(p['id'], 0)
+        storage_frac  = storage_bytes / neon_storage_allowance_bytes
+
+        try:
+            period_end   = datetime.fromisoformat(p['consumption_period_end'].replace('Z', '+00:00'))
+            period_start = datetime.fromisoformat(p['consumption_period_start'].replace('Z', '+00:00'))
+            period_secs  = (period_end - period_start).total_seconds()
+            secs_left_p  = int((period_end - now).total_seconds())
+            p_time_frac   = max(0.0, secs_left_p / period_secs)
+            p_elapsed     = 1.0 - p_time_frac
+            p_reset_str   = (f"resets {fmt_abs(period_end)} (in {fmt_duration(secs_left_p)})"
+                             if secs_left_p > 0 else "resetting soon")
+        except Exception:
+            p_time_frac  = time_frac
+            p_elapsed    = elapsed_frac
+            p_reset_str  = reset_str
+
+        c_light = traffic_light(p_time_frac, compute_frac)
+        c_b     = bar(compute_frac, p_elapsed)
+        print(f"{c_light} {f'{pname} compute':<{LABEL_W}} : {c_b}  {compute_cu_h:5.1f}/100 CU-h ({compute_frac*100:.1f}%)  {p_elapsed*100:.0f}% elapsed  {p_reset_str}")
+
+        storage_mib = storage_bytes / (1024 * 1024)
+        s_b     = bar(storage_frac, storage_frac)
+        s_light = "🟢" if storage_frac < 0.7 else ("🟠" if storage_frac < 0.9 else "🔴")
+        print(f"{s_light} {f'{pname} storage':<{LABEL_W}} : {s_b}  {storage_mib:6.1f}/512 MiB ({storage_frac*100:.1f}%)  persistent cap")
+
+    transfer_mib = total_transfer_bytes / (1024 * 1024)
+    transfer_allowance_mib = neon_transfer_allowance_bytes / (1024 * 1024)
+    t_frac  = total_transfer_bytes / neon_transfer_allowance_bytes
+    t_light = traffic_light(time_frac, t_frac)
+    t_b     = bar(t_frac, elapsed_frac)
+    print(f"{t_light} {'Egress (account-wide)':<{LABEL_W}} : {t_b}  {transfer_mib:6.1f}/{transfer_allowance_mib:.0f} MiB ({t_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {reset_str}")
+
+# ── Cloudflare ────────────────────────────────────────────────────────────
+print()
+print()
+print("── Cloudflare (free tier) ───────────────────────────────────────")
+
+cf_pages_builds   = cf_data.get('pages_builds', 0)
+cf_workers_today  = cf_data.get('workers_requests', 0)
+cf_has_key        = cf_data.get('has_key', False)
+
+if not cf_has_key:
+    print("   (set CF_API_TOKEN to see Cloudflare usage)")
+else:
+    # Pages builds — monthly limit
+    p_usage_frac = cf_pages_builds / cf_pages_allowance
+    p_light      = traffic_light(time_frac, p_usage_frac)
+    p_b          = bar(p_usage_frac, elapsed_frac)
+    p_reset_str  = f"resets {month_end_dt.astimezone().strftime('%b %d')} (in {fmt_duration(int(remaining_secs))})"
+    print(f"{p_light} {'Pages':<{LABEL_W}} : {p_b}  {cf_pages_builds:4d}/{cf_pages_allowance} builds ({p_usage_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {p_reset_str}")
+
+    # Workers requests — daily limit (no time-elapsed bar, just raw usage)
+    w_usage_frac = min(cf_workers_today / cf_workers_daily_allowance, 1.0)
+    if cf_workers_today < cf_workers_daily_allowance * 0.8:
+        w_light = "🟢"
+    elif cf_workers_today < cf_workers_daily_allowance:
+        w_light = "🟠"
+    else:
+        w_light = "🔴"
+    w_b = bar(w_usage_frac, w_usage_frac)
+    print(f"{w_light} {'Workers':<{LABEL_W}} : {w_b}  {cf_workers_today:,}/{cf_workers_daily_allowance:,} req today ({w_usage_frac*100:.1f}%)")
+
+print()
+print()
+print()
+PYEOF

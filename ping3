@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+import curses
+import subprocess
+import threading
+import re
+import sys
+import time
+from collections import deque
+
+MAX_HISTORY = 10000
+
+
+def ping_host(host, state):
+    proc = subprocess.Popen(
+        ['ping', '-i', '0.2', host],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    state['proc'] = proc
+    for line in proc.stdout:
+        m = re.search(r'time[=<](\d+\.?\d*)\s*ms', line)
+        if m:
+            val = m.group(1) + ' ms'
+        elif 'timeout' in line.lower() or 'no answer' in line.lower():
+            val = 'timeout'
+        elif 'unreachable' in line.lower():
+            val = 'unreachable'
+        else:
+            continue
+        state['history'].append(val)
+
+
+def time_color(val):
+    try:
+        ms = float(val.split()[0])
+        if ms < 20:
+            return curses.color_pair(2)
+        elif ms < 100:
+            return curses.color_pair(3)
+        else:
+            return curses.color_pair(4)
+    except (ValueError, IndexError, AttributeError):
+        return curses.color_pair(4)
+
+
+def main(stdscr, hosts):
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_CYAN, -1)
+    curses.init_pair(2, curses.COLOR_GREEN, -1)
+    curses.init_pair(3, curses.COLOR_YELLOW, -1)
+    curses.init_pair(4, curses.COLOR_RED, -1)
+
+    states = [{'history': deque(maxlen=MAX_HISTORY), 'proc': None} for _ in hosts]
+
+    for i, host in enumerate(hosts):
+        t = threading.Thread(target=ping_host, args=(host, states[i]), daemon=True)
+        t.start()
+
+    while True:
+        h, w = stdscr.getmaxyx()
+        col_w = w // 3
+        visible = h - 3  # header + separator + footer
+
+        stdscr.erase()
+
+        # Header
+        for i, host in enumerate(hosts):
+            x = i * col_w
+            if i > 0:
+                try:
+                    stdscr.addch(0, x - 1, '│')
+                except curses.error:
+                    pass
+            try:
+                stdscr.addstr(0, x + 1, host[:col_w - 2], curses.color_pair(1) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+        # Separator
+        try:
+            stdscr.addstr(1, 0, '─' * (w - 1))
+        except curses.error:
+            pass
+
+        # Scrolling history — most recent at top
+        for i in range(len(hosts)):
+            x = i * col_w
+            history = list(states[i]['history'])
+            entries = list(reversed(history[-visible:]))
+
+            for j, val in enumerate(entries):
+                row = 2 + j
+                if i > 0:
+                    try:
+                        stdscr.addch(row, x - 1, '│')
+                    except curses.error:
+                        pass
+                try:
+                    stdscr.addstr(row, x + 1, val[:col_w - 2], time_color(val))
+                except curses.error:
+                    pass
+
+        # Footer
+        try:
+            stdscr.addstr(h - 1, 0, ' q: quit ', curses.A_REVERSE)
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key in (ord('q'), ord('Q'), 27):
+            for state in states:
+                if state['proc']:
+                    state['proc'].terminate()
+            break
+
+        time.sleep(0.05)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 4:
+        print(f'Usage: {sys.argv[0]} <host1> <host2> <host3>')
+        sys.exit(1)
+
+    try:
+        curses.wrapper(main, sys.argv[1:4])
+    except KeyboardInterrupt:
+        pass
