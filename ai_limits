@@ -46,11 +46,37 @@ RESPONSE=$(curl -sf \
 
 # --- GitHub Actions billing ---
 get_gh_actions_billing() {
-    local data
-    # gh api writes error JSON to stdout on 4xx, so capture and only emit on success
-    data=$(gh api /orgs/${GITHUB_ORG}/settings/billing/actions 2>/dev/null) && { echo "$data"; return; }
-    data=$(gh api /users/${GITHUB_ORG}/settings/billing/actions 2>/dev/null) && { echo "$data"; return; }
-    echo '{"total_minutes_used":0,"included_minutes":2000,"minutes_used_breakdown":{}}'
+    local year month data
+    year=$(date +%Y)
+    month=$(date +%-m)
+
+    # Old /settings/billing/actions endpoint returned 410; use new usage API with month filter.
+    data=$(gh api "/orgs/${GITHUB_ORG}/settings/billing/usage?year=${year}&month=${month}" 2>/dev/null) || {
+        echo '{"total_minutes_used":0,"included_minutes":2000,"minutes_used_breakdown":{}}'
+        return
+    }
+
+    echo "$data" | python3 -c "
+import json, sys
+
+raw = {}
+for item in json.load(sys.stdin).get('usageItems', []):
+    if item.get('product') != 'actions':
+        continue
+    qty = int(item.get('quantity', 0))
+    sku = item.get('sku', '').lower()
+    if 'linux' in sku:
+        key = 'UBUNTU'
+    elif 'mac' in sku:
+        key = 'MACOS'
+    elif 'windows' in sku:
+        key = 'WINDOWS'
+    else:
+        key = item.get('sku', 'Other')
+    raw[key] = raw.get(key, 0) + qty
+
+print(json.dumps({'total_minutes_used': sum(raw.values()), 'included_minutes': 2000, 'minutes_used_breakdown': raw}))
+"
 }
 
 # --- Render.com build minutes ---
