@@ -279,6 +279,17 @@ print(json.dumps({'pages_builds': total_builds, 'workers_requests': workers_requ
 CFPY
 }
 
+# --- Workflow status ---
+get_workflow_status() {
+    local repo="$1"
+    local workflow="$2"
+    local result
+    result=$(gh api "repos/${GITHUB_ORG}/${repo}/actions/workflows/${workflow}/runs?per_page=1" \
+        --jq '.workflow_runs[0] | if . then {conclusion: .conclusion, status: .status, created_at: .created_at} else null end' \
+        2>/dev/null) || result='null'
+    echo "${result:-null}"
+}
+
 printf "Fetching GitHub Actions usage..." >&2
 GH_BILLING=$(get_gh_actions_billing)
 printf "\r\033[K" >&2
@@ -312,6 +323,15 @@ for p in json.load(sys.stdin).get('projects', []):
 fi
 printf "\r\033[K" >&2
 
+printf "Fetching workflow statuses..." >&2
+BE_CI_STATUS=$(get_workflow_status "backend" "ci-production.yml")
+BE_CD_STATUS=$(get_workflow_status "backend" "cd-production.yml")
+BE_SANDBOX_STATUS=$(get_workflow_status "backend" "sandbox01-rebuild.yml")
+IOS_CI_STATUS=$(get_workflow_status "ios-app" "ci_production.yml")
+IOS_CD_STATUS=$(get_workflow_status "ios-app" "cd_production.yml")
+IOS_SANDBOX_STATUS=$(get_workflow_status "ios-app" "sandbox01-rebuild.yml")
+printf "\r\033[K" >&2
+
 # --- Display ---
 clear
 python3 << PYEOF
@@ -333,6 +353,12 @@ cf_workers_daily_allowance   = $CF_WORKERS_DAILY_ALLOWANCE
 neon_compute_allowance_secs    = $NEON_COMPUTE_ALLOWANCE_CU_SECS
 neon_storage_allowance_bytes   = $NEON_STORAGE_ALLOWANCE_BYTES
 neon_transfer_allowance_bytes  = $NEON_TRANSFER_ALLOWANCE_BYTES
+be_ci_status      = json.loads('''$BE_CI_STATUS''')
+be_cd_status      = json.loads('''$BE_CD_STATUS''')
+be_sandbox_status = json.loads('''$BE_SANDBOX_STATUS''')
+ios_ci_status      = json.loads('''$IOS_CI_STATUS''')
+ios_cd_status      = json.loads('''$IOS_CD_STATUS''')
+ios_sandbox_status = json.loads('''$IOS_SANDBOX_STATUS''')
 
 neon_projects = neon_projects_raw.get('projects', [])
 LABEL_W = max(
@@ -530,7 +556,55 @@ else:
     w_b = bar(w_usage_frac, w_usage_frac)
     print(f"{w_light} {'Workers':<{LABEL_W}} : {w_b}  {cf_workers_today:,}/{cf_workers_daily_allowance:,} req today ({w_usage_frac*100:.1f}%)")
 
+# ── Workflow Status ───────────────────────────────────────────────────────────
 print()
 print()
-print()
+print("── Workflow Status ──────────────────────────────────────────────")
+
+def workflow_light(run):
+    if run is None:
+        return "⚪", "no runs"
+    status     = run.get('status')
+    conclusion = run.get('conclusion')
+    created_at = run.get('created_at', '')
+    if status in ('in_progress', 'queued', 'waiting', 'requested', 'pending'):
+        light, state = "🔵", "running"
+    elif conclusion == 'success':
+        light, state = "🟢", "passed"
+    elif conclusion in ('failure', 'timed_out', 'startup_failure'):
+        light, state = "🔴", conclusion.replace('_', ' ')
+    elif conclusion == 'cancelled':
+        light, state = "🟠", "cancelled"
+    else:
+        light, state = "⚪", conclusion or status or "unknown"
+    if created_at:
+        try:
+            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            state += f"  ·  {fmt_abs(dt)}"
+        except Exception:
+            pass
+    return light, state
+
+wf_groups = [
+    ("backend", [
+        ("CI (production)",          be_ci_status),
+        ("CD Database (production)", be_cd_status),
+        ("Rebuild sandbox01",        be_sandbox_status),
+    ]),
+    ("ios-app", [
+        ("CI – Production",          ios_ci_status),
+        ("CD – TestFlight",          ios_cd_status),
+        ("Rebuild sandbox01",        ios_sandbox_status),
+    ]),
+]
+
+WF_W = max(len(label) for _, wfs in wf_groups for label, _ in wfs)
+
+for repo_name, wfs in wf_groups:
+    print(f"  {repo_name}")
+    for label, run in wfs:
+        light, state = workflow_light(run)
+        print(f"  {light} {label:<{WF_W}}  {state}")
+    print()
+
 PYEOF
