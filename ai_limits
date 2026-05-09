@@ -604,7 +604,7 @@ for repo_name, wfs in wf_groups:
     print(f"  {repo_name}")
     for label, run in wfs:
         light, state = workflow_light(run)
-        print(f"  {light} {label:<{WF_W}}  {state}")
+        print(f"{light} {label:<{WF_W}}  {state}")
     print()
 
 PYEOF
