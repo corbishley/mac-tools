@@ -327,8 +327,8 @@ printf "Fetching workflow statuses..." >&2
 BE_CI_STATUS=$(get_workflow_status "backend" "ci-production.yml")
 BE_CD_STATUS=$(get_workflow_status "backend" "cd-production.yml")
 BE_SANDBOX_STATUS=$(get_workflow_status "backend" "sandbox01-rebuild.yml")
-IOS_CI_STATUS=$(get_workflow_status "ios-app" "ci_production.yml")
-IOS_CD_STATUS=$(get_workflow_status "ios-app" "cd_production.yml")
+IOS_CI_STATUS=$(get_workflow_status "ios-app" "ci-production.yml")
+IOS_CD_STATUS=$(get_workflow_status "ios-app" "cd-production.yml")
 IOS_SANDBOX_STATUS=$(get_workflow_status "ios-app" "sandbox01-rebuild.yml")
 printf "\r\033[K" >&2
 
@@ -588,12 +588,12 @@ def workflow_light(run):
 wf_groups = [
     ("backend", [
         ("CI (production)",          be_ci_status),
-        ("CD Database (production)", be_cd_status),
+        ("CD – Database (production)", be_cd_status),
         ("Rebuild sandbox01",        be_sandbox_status),
     ]),
     ("ios-app", [
-        ("CI – Production",          ios_ci_status),
-        ("CD – TestFlight",          ios_cd_status),
+        ("CI (production)",           ios_ci_status),
+        ("CD – TestFlight (production)", ios_cd_status),
         ("Rebuild sandbox01",        ios_sandbox_status),
     ]),
 ]
