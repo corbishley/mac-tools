@@ -9,6 +9,10 @@
 
 set -uo pipefail
 
+REFRESH_MINS="${1:-}"
+
+while true; do
+
 # --- Get OAuth token from keychain ---
 CREDS=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || {
     echo "Error: Could not read Claude credentials from keychain" >&2
@@ -279,17 +283,6 @@ print(json.dumps({'pages_builds': total_builds, 'workers_requests': workers_requ
 CFPY
 }
 
-# --- Workflow status ---
-get_workflow_status() {
-    local repo="$1"
-    local workflow="$2"
-    local result
-    result=$(gh api "repos/${GITHUB_ORG}/${repo}/actions/workflows/${workflow}/runs?per_page=1" \
-        --jq '.workflow_runs[0] | if . then {conclusion: .conclusion, status: .status, created_at: .created_at} else null end' \
-        2>/dev/null) || result='null'
-    echo "${result:-null}"
-}
-
 printf "Fetching GitHub Actions usage..." >&2
 GH_BILLING=$(get_gh_actions_billing)
 printf "\r\033[K" >&2
@@ -323,15 +316,6 @@ for p in json.load(sys.stdin).get('projects', []):
 fi
 printf "\r\033[K" >&2
 
-printf "Fetching workflow statuses..." >&2
-BE_CI_STATUS=$(get_workflow_status "backend" "ci-production.yml")
-BE_CD_STATUS=$(get_workflow_status "backend" "cd-production.yml")
-BE_SANDBOX_STATUS=$(get_workflow_status "backend" "sandbox01-rebuild.yml")
-IOS_CI_STATUS=$(get_workflow_status "ios-app" "ci-production.yml")
-IOS_CD_STATUS=$(get_workflow_status "ios-app" "cd-production.yml")
-IOS_SANDBOX_STATUS=$(get_workflow_status "ios-app" "sandbox01-rebuild.yml")
-printf "\r\033[K" >&2
-
 # --- Display ---
 clear
 python3 << PYEOF
@@ -347,18 +331,12 @@ render_mins    = $RENDER_MINS
 render_allowance = $RENDER_ALLOWANCE
 cf_data            = json.loads('''$CF_DATA''')
 neon_projects_raw  = json.loads('''$NEON_PROJECTS_RAW''')
-neon_storage_map   = json.loads('''$NEON_STORAGE_JSON''')
+neon_storage_map      = json.loads('''$NEON_STORAGE_JSON''')
 cf_pages_allowance           = $CF_PAGES_ALLOWANCE
 cf_workers_daily_allowance   = $CF_WORKERS_DAILY_ALLOWANCE
 neon_compute_allowance_secs    = $NEON_COMPUTE_ALLOWANCE_CU_SECS
 neon_storage_allowance_bytes   = $NEON_STORAGE_ALLOWANCE_BYTES
 neon_transfer_allowance_bytes  = $NEON_TRANSFER_ALLOWANCE_BYTES
-be_ci_status      = json.loads('''$BE_CI_STATUS''')
-be_cd_status      = json.loads('''$BE_CD_STATUS''')
-be_sandbox_status = json.loads('''$BE_SANDBOX_STATUS''')
-ios_ci_status      = json.loads('''$IOS_CI_STATUS''')
-ios_cd_status      = json.loads('''$IOS_CD_STATUS''')
-ios_sandbox_status = json.loads('''$IOS_SANDBOX_STATUS''')
 
 neon_projects = neon_projects_raw.get('projects', [])
 LABEL_W = max(
@@ -426,8 +404,9 @@ def fmt_claude_window(label, d, window_secs):
 
     print(f"{light} {label.strip():<{LABEL_W}} : {b}  {pct:3.0f}% used  {elapsed_frac*100:3.0f}% time elapsed  {reset_str}")
 
-# ── Claude Usage ──────────────────────────────────────────────
-print("── Claude ───────────────────────────────────────────────────────")
+# ── Limits ────────────────────────────────────────────────────
+print("── Limits ───────────────────────────────────────────────────────")
+print("Claude")
 fmt_claude_window("5-hour ", data.get("five_hour"),  5 * 3600)
 fmt_claude_window("7-day  ", data.get("seven_day"), 7 * 24 * 3600)
 
@@ -437,8 +416,7 @@ if extra and extra.get("is_enabled") and extra.get("utilization") is not None:
 
 # ── GitHub Actions ────────────────────────────────────────────
 print()
-print()
-print("── GitHub Actions (${GITHUB_ORG}, free tier) ──────────────────")
+print("GitHub Actions (${GITHUB_ORG}, free tier)")
 
 now = datetime.now(timezone.utc)
 # Month boundaries
@@ -467,8 +445,7 @@ if breakdown_parts:
 
 # ── Render.com ────────────────────────────────────────────────
 print()
-print()
-print("── Render.com (${GITHUB_ORG}, free tier) ──────────────────────")
+print("Render.com (${GITHUB_ORG}, free tier)")
 
 r_usage_frac   = render_mins / render_allowance
 r_light        = traffic_light(time_frac, r_usage_frac)
@@ -479,15 +456,14 @@ print(f"{r_light} {'Build':<{LABEL_W}} : {r_b}  {render_mins:4d}/{render_allowan
 
 # ── Neon ──────────────────────────────────────────────────────────
 print()
-print()
-print("── Neon (free tier) ─────────────────────────────────────────────")
+print("Neon (free tier)")
 
 if not neon_projects:
     print("   (set NEON_API_KEY to see Neon usage)")
 else:
     total_transfer_bytes = sum(p.get('data_transfer_bytes', 0) or 0 for p in neon_projects)
 
-    for p in neon_projects:
+    for p in sorted(neon_projects, key=lambda p: p.get('name', p['id']).lower()):
         pname = p.get('name', p['id'])
         compute_secs = p.get('compute_time_seconds', 0) or 0
         compute_cu_h = compute_secs / 3600
@@ -528,8 +504,7 @@ else:
 
 # ── Cloudflare ────────────────────────────────────────────────────────────
 print()
-print()
-print("── Cloudflare (free tier) ───────────────────────────────────────")
+print("Cloudflare (free tier)")
 
 cf_pages_builds   = cf_data.get('pages_builds', 0)
 cf_workers_today  = cf_data.get('workers_requests', 0)
@@ -556,55 +531,9 @@ else:
     w_b = bar(w_usage_frac, w_usage_frac)
     print(f"{w_light} {'Workers':<{LABEL_W}} : {w_b}  {cf_workers_today:,}/{cf_workers_daily_allowance:,} req today ({w_usage_frac*100:.1f}%)")
 
-# ── Workflow Status ───────────────────────────────────────────────────────────
-print()
-print()
-print("── Workflow Status ──────────────────────────────────────────────")
-
-def workflow_light(run):
-    if run is None:
-        return "⚪", "no runs"
-    status     = run.get('status')
-    conclusion = run.get('conclusion')
-    created_at = run.get('created_at', '')
-    if status in ('in_progress', 'queued', 'waiting', 'requested', 'pending'):
-        light, state = "🔵", "running"
-    elif conclusion == 'success':
-        light, state = "🟢", "passed"
-    elif conclusion in ('failure', 'timed_out', 'startup_failure'):
-        light, state = "🔴", conclusion.replace('_', ' ')
-    elif conclusion == 'cancelled':
-        light, state = "🟠", "cancelled"
-    else:
-        light, state = "⚪", conclusion or status or "unknown"
-    if created_at:
-        try:
-            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            state += f"  ·  {fmt_abs(dt)}"
-        except Exception:
-            pass
-    return light, state
-
-wf_groups = [
-    ("backend", [
-        ("CI (production)",          be_ci_status),
-        ("CD – Database (production)", be_cd_status),
-        ("Rebuild sandbox01",        be_sandbox_status),
-    ]),
-    ("ios-app", [
-        ("CI (production)",           ios_ci_status),
-        ("CD – TestFlight (production)", ios_cd_status),
-        ("Rebuild sandbox01",        ios_sandbox_status),
-    ]),
-]
-
-WF_W = max(len(label) for _, wfs in wf_groups for label, _ in wfs)
-
-for repo_name, wfs in wf_groups:
-    print(f"  {repo_name}")
-    for label, run in wfs:
-        light, state = workflow_light(run)
-        print(f"{light} {label:<{WF_W}}  {state}")
-    print()
-
 PYEOF
+
+[[ -z "$REFRESH_MINS" ]] && break
+sleep $(( REFRESH_MINS * 60 ))
+done
+

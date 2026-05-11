@@ -1,0 +1,379 @@
+#!/bin/bash
+# Reports GitHub workflow status, Render.com service status, and Neon endpoint status.
+# API keys: read from env vars, with macOS keychain fallback.
+#   Neon:   NEON_API_KEY  or  security add-generic-password -s "neon-api-key" -a "$USER" -w "key"
+#   Render: RENDER_API_KEY (env only)
+
+set -uo pipefail
+
+# --- Keychain fallback for service API keys ---
+if [[ -z "${NEON_API_KEY:-}" ]]; then
+    NEON_API_KEY=$(security find-generic-password -s "neon-api-key" -w 2>/dev/null) || true
+fi
+export NEON_API_KEY
+
+INTERVAL_MINS="${1:-}"
+
+# --- Render.com service deploy status ---
+get_render_service_status() {
+    local api_key="${RENDER_API_KEY:-}"
+    [[ -z "$api_key" ]] && echo '[]' && return
+
+    RENDER_API_KEY="$api_key" python3 << 'RDPY'
+import json, os, urllib.request
+
+api_key = os.environ['RENDER_API_KEY']
+
+def render_get(path):
+    req = urllib.request.Request(
+        f'https://api.render.com/v1{path}',
+        headers={'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+    except Exception:
+        return []
+
+services = render_get('/services?limit=100')
+result = []
+
+for item in services:
+    svc = item.get('service', item)
+    svc_id   = svc.get('id', '')
+    svc_name = svc.get('name', svc_id)
+    svc_type = svc.get('type', '')
+
+    deploys = render_get(f'/services/{svc_id}/deploys?limit=1')
+    deploy_status = None
+    deploy_at = None
+    if deploys:
+        d = deploys[0].get('deploy', deploys[0])
+        deploy_status = d.get('status')
+        deploy_at = d.get('updatedAt') or d.get('createdAt')
+
+    result.append({
+        'name': svc_name,
+        'type': svc_type,
+        'deploy_status': deploy_status,
+        'deploy_at': deploy_at,
+    })
+
+print(json.dumps(result))
+RDPY
+}
+
+# --- Neon ---
+get_neon_projects() {
+    local api_key="${NEON_API_KEY:-}"
+    [[ -z "$api_key" ]] && echo '{"projects":[]}' && return
+
+    NEON_API_KEY="$api_key" python3 << 'NEONPY'
+import json, sys, os, urllib.request, urllib.error
+
+token = os.environ.get('NEON_API_KEY', '')
+
+def neon_get(path):
+    req = urllib.request.Request(
+        f'https://console.neon.tech/api/v2{path}',
+        headers={'Authorization': f'Bearer {token}'}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read()), r.status
+    except urllib.error.HTTPError as e:
+        return {}, e.code
+    except Exception:
+        return {}, 0
+
+all_projects = []
+
+# Try personal projects; if the account is org-scoped the API returns 400
+data, status = neon_get('/projects?limit=100')
+if status == 200:
+    all_projects.extend(data.get('projects', []))
+else:
+    orgs_data, _ = neon_get('/users/me/organizations')
+    for org in orgs_data.get('organizations', []):
+        proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
+        all_projects.extend(proj_data.get('projects', []))
+
+print(json.dumps({'projects': all_projects}))
+NEONPY
+}
+
+get_neon_endpoint_status() {
+    local api_key="${NEON_API_KEY:-}"
+    [[ -z "$api_key" ]] && echo '{}' && return
+
+    NEON_API_KEY="$api_key" python3 << 'NEONEPY'
+import json, os, urllib.request, urllib.error
+
+token = os.environ.get('NEON_API_KEY', '')
+
+def neon_get(path):
+    req = urllib.request.Request(
+        f'https://console.neon.tech/api/v2{path}',
+        headers={'Authorization': f'Bearer {token}'}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read()), r.status
+    except urllib.error.HTTPError as e:
+        return {}, e.code
+    except Exception:
+        return {}, 0
+
+data, status = neon_get('/projects?limit=100')
+if status == 200:
+    all_projects = data.get('projects', [])
+else:
+    orgs_data, _ = neon_get('/users/me/organizations')
+    all_projects = []
+    for org in orgs_data.get('organizations', []):
+        proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
+        all_projects.extend(proj_data.get('projects', []))
+
+result = {}
+for p in all_projects:
+    proj_id = p['id']
+    branches_data, _ = neon_get(f'/projects/{proj_id}/branches')
+    branch_names = {b['id']: b['name'] for b in branches_data.get('branches', [])}
+    endpoints_data, _ = neon_get(f'/projects/{proj_id}/endpoints')
+    endpoints = []
+    for e in endpoints_data.get('endpoints', []):
+        if e.get('type') != 'read_write':
+            continue
+        endpoints.append({
+            'branch': branch_names.get(e.get('branch_id', ''), '?'),
+            'state': e.get('current_state', e.get('state', 'unknown')),
+            'updated_at': e.get('updated_at', ''),
+        })
+    result[proj_id] = endpoints
+
+print(json.dumps(result))
+NEONEPY
+}
+
+# --- Workflow status ---
+get_workflow_status() {
+    local repo="$1"
+    local workflow="$2"
+    local result
+    result=$(gh api "repos/${GITHUB_ORG}/${repo}/actions/workflows/${workflow}/runs?per_page=1" \
+        --jq '.workflow_runs[0] | if . then {conclusion: .conclusion, status: .status, created_at: .created_at} else null end' \
+        2>/dev/null) || result='null'
+    echo "${result:-null}"
+}
+
+while true; do
+
+printf "Fetching Render.com service status..." >&2
+RENDER_SERVICES=$(get_render_service_status)
+printf "\r\033[K" >&2
+
+printf "Fetching Neon projects..." >&2
+NEON_PROJECTS_RAW=$(get_neon_projects)
+printf "\r\033[K" >&2
+
+printf "Fetching Neon endpoint status..." >&2
+NEON_ENDPOINT_STATUS=$(get_neon_endpoint_status)
+printf "\r\033[K" >&2
+
+printf "Fetching workflow statuses..." >&2
+BE_CI_STATUS=$(get_workflow_status "backend" "ci-production.yml")
+BE_CI_SANDBOX_STATUS=$(get_workflow_status "backend" "ci-sandbox01.yml")
+BE_CD_STATUS=$(get_workflow_status "backend" "cd-production.yml")
+BE_CD_SANDBOX_STATUS=$(get_workflow_status "backend" "cd-sandbox01.yml")
+BE_MIGRATE_STATUS=$(get_workflow_status "backend" "migrate-database-production.yml")
+BE_MIGRATE_SANDBOX_STATUS=$(get_workflow_status "backend" "migrate-database-sandbox01.yml")
+BE_DELETE_STATUS=$(get_workflow_status "backend" "delete-merged-branches.yml")
+BE_SANDBOX_STATUS=$(get_workflow_status "backend" "sandbox01-rebuild.yml")
+IOS_CI_STATUS=$(get_workflow_status "ios-app" "ci-production.yml")
+IOS_CI_SANDBOX_STATUS=$(get_workflow_status "ios-app" "ci-sandbox01.yml")
+IOS_CD_STATUS=$(get_workflow_status "ios-app" "cd-production.yml")
+IOS_CD_SANDBOX_STATUS=$(get_workflow_status "ios-app" "cd-sandbox01.yml")
+IOS_DELETE_STATUS=$(get_workflow_status "ios-app" "delete-merged-branches.yml")
+IOS_SANDBOX_STATUS=$(get_workflow_status "ios-app" "sandbox01-rebuild.yml")
+printf "\r\033[K" >&2
+
+# --- Display ---
+clear
+python3 << PYEOF
+import json, sys
+from datetime import datetime, timezone
+
+render_services    = json.loads('''$RENDER_SERVICES''')
+neon_projects_raw  = json.loads('''$NEON_PROJECTS_RAW''')
+neon_endpoint_status  = json.loads('''$NEON_ENDPOINT_STATUS''')
+be_ci_status             = json.loads('''$BE_CI_STATUS''')
+be_ci_sandbox_status     = json.loads('''$BE_CI_SANDBOX_STATUS''')
+be_cd_status             = json.loads('''$BE_CD_STATUS''')
+be_cd_sandbox_status     = json.loads('''$BE_CD_SANDBOX_STATUS''')
+be_migrate_status         = json.loads('''$BE_MIGRATE_STATUS''')
+be_migrate_sandbox_status = json.loads('''$BE_MIGRATE_SANDBOX_STATUS''')
+be_delete_status          = json.loads('''$BE_DELETE_STATUS''')
+be_sandbox_status         = json.loads('''$BE_SANDBOX_STATUS''')
+ios_ci_status         = json.loads('''$IOS_CI_STATUS''')
+ios_ci_sandbox_status = json.loads('''$IOS_CI_SANDBOX_STATUS''')
+ios_cd_status         = json.loads('''$IOS_CD_STATUS''')
+ios_cd_sandbox_status = json.loads('''$IOS_CD_SANDBOX_STATUS''')
+ios_delete_status     = json.loads('''$IOS_DELETE_STATUS''')
+ios_sandbox_status    = json.loads('''$IOS_SANDBOX_STATUS''')
+
+neon_projects = neon_projects_raw.get('projects', [])
+
+def fmt_abs(dt):
+    return dt.astimezone().strftime("%a %H:%M")
+
+def workflow_light(run):
+    if run is None:
+        return "⚪", "no runs"
+    status     = run.get('status')
+    conclusion = run.get('conclusion')
+    created_at = run.get('created_at', '')
+    if status in ('in_progress', 'queued', 'waiting', 'requested', 'pending'):
+        light, state = "🔵", "running"
+    elif conclusion == 'success':
+        light, state = "🟢", "passed"
+    elif conclusion in ('failure', 'timed_out', 'startup_failure'):
+        light, state = "🔴", conclusion.replace('_', ' ')
+    elif conclusion == 'cancelled':
+        light, state = "🟠", "cancelled"
+    else:
+        light, state = "⚪", conclusion or status or "unknown"
+    if created_at:
+        try:
+            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            state += f"  ·  {fmt_abs(dt)}"
+        except Exception:
+            pass
+    return light, state
+
+def render_deploy_light(status):
+    if status is None:
+        return "⚪", "no deploys"
+    return {
+        'live':                ("🟢", "live"),
+        'build_in_progress':   ("🔵", "building"),
+        'update_in_progress':  ("🔵", "updating"),
+        'created':             ("🔵", "created"),
+        'build_failed':        ("🔴", "build failed"),
+        'update_failed':       ("🔴", "update failed"),
+        'pre_deploy_failed':   ("🔴", "pre-deploy failed"),
+        'deactivated':         ("🟠", "deactivated"),
+        'canceled':            ("🟠", "canceled"),
+    }.get(status, ("⚪", status or "unknown"))
+
+production = [
+    ("backend", [
+        ("CD – Deploy (production)",       be_cd_status),
+        ("CI (production)",                be_ci_status),
+        ("Migrate Database (production)",  be_migrate_status),
+    ]),
+    ("ios-app", [
+        ("CD – TestFlight (production)",   ios_cd_status),
+        ("CI (production)",                ios_ci_status),
+    ]),
+]
+sandbox = [
+    ("backend", [
+        ("CD – Deploy (sandbox01)",        be_cd_sandbox_status),
+        ("CI (sandbox01)",                 be_ci_sandbox_status),
+        ("Migrate Database (sandbox01)",   be_migrate_sandbox_status),
+    ]),
+    ("ios-app", [
+        ("CD – TestFlight (sandbox01)",    ios_cd_sandbox_status),
+        ("CI (sandbox01)",                 ios_ci_sandbox_status),
+    ]),
+]
+rebuilds = [
+    ("backend",  be_sandbox_status),
+    ("ios-app",  ios_sandbox_status),
+]
+delete_branches = [
+    ("backend",  be_delete_status),
+    ("ios-app",  ios_delete_status),
+]
+
+WF_W = max(len(label) for env in [production, sandbox] for _, wfs in env for label, _ in wfs)
+RB_W = max(len(repo) for repo, _ in rebuilds)
+
+neon_ep_rows = [
+    (p.get('name', p['id']), ep)
+    for p in sorted(neon_projects, key=lambda p: p.get('name', p['id']).lower())
+    for ep in neon_endpoint_status.get(p['id'], [])
+]
+NEP_W = max((len(f"{pname} {ep.get('branch', '?')}") for pname, ep in neon_ep_rows), default=10)
+SVC_W = max((len(s['name']) for s in render_services), default=10)
+
+def print_render_section(env_key):
+    filtered = [s for s in render_services if env_key in s['name'].lower()]
+    if not filtered:
+        return
+    print("Render.com")
+    w = max(len(s['name']) for s in filtered)
+    for svc in sorted(filtered, key=lambda s: s['name'].lower()):
+        light, state = render_deploy_light(svc.get('deploy_status'))
+        if svc.get('deploy_at'):
+            try:
+                dt = datetime.fromisoformat(svc['deploy_at'].replace('Z', '+00:00'))
+                state += f"  ·  {fmt_abs(dt)}"
+            except Exception:
+                pass
+        print(f"{light} {svc['name']:<{w}}  {state}")
+    print()
+
+def print_neon_section(env_key):
+    rows = [(pname, ep) for pname, ep in neon_ep_rows
+            if env_key in pname.lower() or env_key in ep.get('branch', '').lower()]
+    if not rows:
+        return
+    print("Neon")
+    w = max(len(f"{pname} {ep.get('branch', '?')}") for pname, ep in rows)
+    for pname, ep in rows:
+        ep_state = ep.get('state', 'unknown')
+        ep_light = {'active': '🟢', 'idle': '🟠', 'init': '🔵'}.get(ep_state, '⚪')
+        ep_label = f"{pname} {ep.get('branch', '?')}"
+        ep_ts = ''
+        if ep.get('updated_at'):
+            try:
+                dt = datetime.fromisoformat(ep['updated_at'].replace('Z', '+00:00'))
+                ep_ts = f"  ·  {fmt_abs(dt)}"
+            except Exception:
+                pass
+        print(f"{ep_light} {ep_label:<{w}}  {ep_state}{ep_ts}")
+    print()
+
+print("── Rebuilds ─────────────────────────────────────────────────────")
+
+for repo, run in rebuilds:
+    light, state = workflow_light(run)
+    print(f"{light} {repo:<{RB_W}}  {state}")
+
+print()
+print("── Delete merged branches ───────────────────────────────────────")
+DB_W = max(len(repo) for repo, _ in delete_branches)
+for repo, run in delete_branches:
+    light, state = workflow_light(run)
+    print(f"{light} {repo:<{DB_W}}  {state}")
+
+for i, (env_name, env_key, wf_groups) in enumerate([("production", "production", production), ("sandbox01", "sandbox", sandbox)]):
+    if i == 0:
+        print()
+    print(f"── Checks {env_name} ──────────────────────────────────────────────")
+    for repo, wfs in wf_groups:
+        print(f"GitHub – {repo}")
+        for label, run in wfs:
+            light, state = workflow_light(run)
+            print(f"{light} {label:<{WF_W}}  {state}")
+        print()
+    print_render_section(env_key)
+    print_neon_section(env_key)
+
+PYEOF
+
+[[ -z "$INTERVAL_MINS" ]] && break
+sleep $(( INTERVAL_MINS * 60 ))
+
+done
