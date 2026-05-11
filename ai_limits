@@ -10,6 +10,7 @@
 set -uo pipefail
 
 REFRESH_MINS="${1:-}"
+GITHUB_ORG="${GITHUB_ORG:-}"
 
 while true; do
 
@@ -416,7 +417,7 @@ if extra and extra.get("is_enabled") and extra.get("utilization") is not None:
 
 # ── GitHub Actions ────────────────────────────────────────────
 print()
-print("GitHub Actions (${GITHUB_ORG}, free tier)")
+print("GitHub Actions ($GITHUB_ORG, free tier)")
 
 now = datetime.now(timezone.utc)
 # Month boundaries
@@ -445,7 +446,7 @@ if breakdown_parts:
 
 # ── Render.com ────────────────────────────────────────────────
 print()
-print("Render.com (${GITHUB_ORG}, free tier)")
+print("Render.com ($GITHUB_ORG, free tier)")
 
 r_usage_frac   = render_mins / render_allowance
 r_light        = traffic_light(time_frac, r_usage_frac)

@@ -6,6 +6,11 @@
 
 set -uo pipefail
 
+# --- Configuration ---
+GITHUB_ORG="${GITHUB_ORG:-}"
+BACKEND_REPO="${BACKEND_REPO:-backend}"
+IOS_REPO="${IOS_REPO:-ios-app}"
+
 # --- Keychain fallback for service API keys ---
 if [[ -z "${NEON_API_KEY:-}" ]]; then
     NEON_API_KEY=$(security find-generic-password -s "neon-api-key" -w 2>/dev/null) || true
@@ -181,20 +186,20 @@ NEON_ENDPOINT_STATUS=$(get_neon_endpoint_status)
 printf "\r\033[K" >&2
 
 printf "Fetching workflow statuses..." >&2
-BE_CI_STATUS=$(get_workflow_status "backend" "ci-production.yml")
-BE_CI_SANDBOX_STATUS=$(get_workflow_status "backend" "ci-sandbox01.yml")
-BE_CD_STATUS=$(get_workflow_status "backend" "cd-production.yml")
-BE_CD_SANDBOX_STATUS=$(get_workflow_status "backend" "cd-sandbox01.yml")
-BE_MIGRATE_STATUS=$(get_workflow_status "backend" "migrate-database-production.yml")
-BE_MIGRATE_SANDBOX_STATUS=$(get_workflow_status "backend" "migrate-database-sandbox01.yml")
-BE_DELETE_STATUS=$(get_workflow_status "backend" "delete-merged-branches.yml")
-BE_SANDBOX_STATUS=$(get_workflow_status "backend" "sandbox01-rebuild.yml")
-IOS_CI_STATUS=$(get_workflow_status "ios-app" "ci-production.yml")
-IOS_CI_SANDBOX_STATUS=$(get_workflow_status "ios-app" "ci-sandbox01.yml")
-IOS_CD_STATUS=$(get_workflow_status "ios-app" "cd-production.yml")
-IOS_CD_SANDBOX_STATUS=$(get_workflow_status "ios-app" "cd-sandbox01.yml")
-IOS_DELETE_STATUS=$(get_workflow_status "ios-app" "delete-merged-branches.yml")
-IOS_SANDBOX_STATUS=$(get_workflow_status "ios-app" "sandbox01-rebuild.yml")
+BE_CI_STATUS=$(get_workflow_status "$BACKEND_REPO" "ci-production.yml")
+BE_CI_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "ci-sandbox01.yml")
+BE_CD_STATUS=$(get_workflow_status "$BACKEND_REPO" "cd-production.yml")
+BE_CD_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "cd-sandbox01.yml")
+BE_MIGRATE_STATUS=$(get_workflow_status "$BACKEND_REPO" "migrate-database-production.yml")
+BE_MIGRATE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "migrate-database-sandbox01.yml")
+BE_DELETE_STATUS=$(get_workflow_status "$BACKEND_REPO" "delete-merged-branches.yml")
+BE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "sandbox01-rebuild.yml")
+IOS_CI_STATUS=$(get_workflow_status "$IOS_REPO" "ci-production.yml")
+IOS_CI_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "ci-sandbox01.yml")
+IOS_CD_STATUS=$(get_workflow_status "$IOS_REPO" "cd-production.yml")
+IOS_CD_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "cd-sandbox01.yml")
+IOS_DELETE_STATUS=$(get_workflow_status "$IOS_REPO" "delete-merged-branches.yml")
+IOS_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "sandbox01-rebuild.yml")
 printf "\r\033[K" >&2
 
 # --- Display ---
@@ -266,34 +271,34 @@ def render_deploy_light(status):
     }.get(status, ("⚪", status or "unknown"))
 
 production = [
-    ("backend", [
+    ("$BACKEND_REPO", [
         ("CD – Deploy (production)",       be_cd_status),
         ("CI (production)",                be_ci_status),
         ("Migrate Database (production)",  be_migrate_status),
     ]),
-    ("ios-app", [
+    ("$IOS_REPO", [
         ("CD – TestFlight (production)",   ios_cd_status),
         ("CI (production)",                ios_ci_status),
     ]),
 ]
 sandbox = [
-    ("backend", [
+    ("$BACKEND_REPO", [
         ("CD – Deploy (sandbox01)",        be_cd_sandbox_status),
         ("CI (sandbox01)",                 be_ci_sandbox_status),
         ("Migrate Database (sandbox01)",   be_migrate_sandbox_status),
     ]),
-    ("ios-app", [
+    ("$IOS_REPO", [
         ("CD – TestFlight (sandbox01)",    ios_cd_sandbox_status),
         ("CI (sandbox01)",                 ios_ci_sandbox_status),
     ]),
 ]
 rebuilds = [
-    ("backend",  be_sandbox_status),
-    ("ios-app",  ios_sandbox_status),
+    ("$BACKEND_REPO",  be_sandbox_status),
+    ("$IOS_REPO",      ios_sandbox_status),
 ]
 delete_branches = [
-    ("backend",  be_delete_status),
-    ("ios-app",  ios_delete_status),
+    ("$BACKEND_REPO",  be_delete_status),
+    ("$IOS_REPO",      ios_delete_status),
 ]
 
 WF_W = max(len(label) for env in [production, sandbox] for _, wfs in env for label, _ in wfs)
