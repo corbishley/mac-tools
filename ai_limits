@@ -532,6 +532,7 @@ else:
     print(f"{w_light} {'Workers':<{LABEL_W}} : {w_b}  {cf_workers_today:,}/{cf_workers_daily_allowance:,} req today ({w_usage_frac*100:.1f}%)")
 
 PYEOF
+echo
 
 [[ -z "$REFRESH_MINS" ]] && break
 sleep $(( REFRESH_MINS * 60 ))
