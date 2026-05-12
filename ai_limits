@@ -40,13 +40,15 @@ fi
 export NEON_API_KEY CF_API_TOKEN
 
 # --- Call the Claude usage API ---
+CLAUDE_API_ERROR=0
 RESPONSE=$(curl -sf \
     -H "Authorization: Bearer $TOKEN" \
     -H "anthropic-beta: oauth-2025-04-20" \
     -H "User-Agent: claude-code/$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" \
     "https://api.anthropic.com/api/oauth/usage") || {
-    echo "Error: Claude API request failed" >&2
-    exit 1
+    echo "Warning: Claude API request failed, continuing without Claude usage data" >&2
+    RESPONSE='{}'
+    CLAUDE_API_ERROR=1
 }
 
 # --- GitHub Actions billing ---
@@ -324,6 +326,7 @@ import json, sys, math
 from datetime import datetime, timezone
 
 data = json.loads('''$RESPONSE''')
+claude_api_error = $CLAUDE_API_ERROR
 gh_billing     = json.loads('''$GH_BILLING''')
 gh_total_mins  = gh_billing.get('total_minutes_used', 0)
 gh_allowance   = gh_billing.get('included_minutes', 2000)
@@ -408,12 +411,15 @@ def fmt_claude_window(label, d, window_secs):
 # ── Limits ────────────────────────────────────────────────────
 print("── Limits ───────────────────────────────────────────────────────")
 print("Claude")
-fmt_claude_window("5-hour ", data.get("five_hour"),  5 * 3600)
-fmt_claude_window("7-day  ", data.get("seven_day"), 7 * 24 * 3600)
+if claude_api_error:
+    print("   (API request failed — check token or network)")
+else:
+    fmt_claude_window("5-hour ", data.get("five_hour"),  5 * 3600)
+    fmt_claude_window("7-day  ", data.get("seven_day"), 7 * 24 * 3600)
 
-extra = data.get("extra_usage", {})
-if extra and extra.get("is_enabled") and extra.get("utilization") is not None:
-    print(f"   Extra:  {extra['utilization']:.0f}% of monthly add-on used")
+    extra = data.get("extra_usage", {})
+    if extra and extra.get("is_enabled") and extra.get("utilization") is not None:
+        print(f"   Extra:  {extra['utilization']:.0f}% of monthly add-on used")
 
 # ── GitHub Actions ────────────────────────────────────────────
 print()
