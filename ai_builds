@@ -129,6 +129,19 @@ def neon_get(path):
     except Exception:
         return {}, 0
 
+def neon_post(path):
+    req = urllib.request.Request(
+        f'https://console.neon.tech/api/v2{path}',
+        data=b'',
+        headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+        method='POST'
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status
+    except Exception:
+        return 0
+
 data, status = neon_get('/projects?limit=100')
 if status == 200:
     all_projects = data.get('projects', [])
@@ -149,6 +162,7 @@ for p in all_projects:
     for e in endpoints_data.get('endpoints', []):
         if e.get('type') != 'read_write':
             continue
+        neon_post(f'/projects/{proj_id}/endpoints/{e["id"]}/start')
         endpoints.append({
             'branch': branch_names.get(e.get('branch_id', ''), '?'),
             'state': e.get('current_state', e.get('state', 'unknown')),
@@ -173,10 +187,8 @@ get_workflow_status() {
 
 while true; do
 
-printf "Waking Neon databases..." >&2
-curl -s -o /dev/null -w "%{http_code}" -X POST https://shoesthatfit-auth-production.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' > /dev/null
-curl -s -o /dev/null -w "%{http_code}" -X POST https://shoesthatfit-auth-sandbox01.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' > /dev/null
-printf "\r\033[K" >&2
+curl -s -o /dev/null -X POST https://shoesthatfit-auth-production.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
+curl -s -o /dev/null -X POST https://shoesthatfit-auth-sandbox01.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
 
 printf "Fetching Render.com service status..." >&2
 RENDER_SERVICES=$(get_render_service_status)
