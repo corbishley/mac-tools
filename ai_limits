@@ -66,6 +66,9 @@ get_gh_actions_billing() {
     echo "$data" | python3 -c "
 import json, sys
 
+# GitHub multipliers: raw runner minutes → billed minutes toward quota
+MULTIPLIERS = {'UBUNTU': 1, 'WINDOWS': 2, 'MACOS': 10}
+
 raw = {}
 for item in json.load(sys.stdin).get('usageItems', []):
     if item.get('product') != 'actions':
@@ -82,7 +85,8 @@ for item in json.load(sys.stdin).get('usageItems', []):
         key = item.get('sku', 'Other')
     raw[key] = raw.get(key, 0) + qty
 
-print(json.dumps({'total_minutes_used': sum(raw.values()), 'included_minutes': 2000, 'minutes_used_breakdown': raw}))
+billed = sum(v * MULTIPLIERS.get(k, 1) for k, v in raw.items())
+print(json.dumps({'total_minutes_used': billed, 'included_minutes': 2000, 'minutes_used_breakdown': raw}))
 "
 }
 
@@ -446,7 +450,8 @@ b     = bar(usage_frac, elapsed_frac)
 reset_str = f"resets {month_end_dt.astimezone().strftime('%b %d')} (in {fmt_duration(int(remaining_secs))})"
 
 print(f"{light} {'Total':<{LABEL_W}} : {b}  {gh_total_mins:4d}/{gh_allowance} min ({usage_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {reset_str}")
-breakdown_parts = [f"{k.capitalize()}: {v} min" for k, v in gh_breakdown.items() if v]
+MULT = {'Ubuntu': 1, 'Windows': 2, 'Macos': 10}
+breakdown_parts = [f"{k.capitalize()}: {v} min raw (×{MULT.get(k.capitalize(), 1)})" for k, v in gh_breakdown.items() if v]
 if breakdown_parts:
     print(f"  {'':{LABEL_W + 4}}{',   '.join(breakdown_parts)}")
 
