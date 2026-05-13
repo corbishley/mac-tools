@@ -107,11 +107,11 @@ print(json.dumps({'projects': all_projects}))
 NEONPY
 }
 
-get_neon_endpoint_status() {
+wake_neon_endpoints() {
     local api_key="${NEON_API_KEY:-}"
-    [[ -z "$api_key" ]] && echo '{}' && return
+    [[ -z "$api_key" ]] && return
 
-    NEON_API_KEY="$api_key" python3 << 'NEONEPY'
+    NEON_API_KEY="$api_key" python3 << 'NEONWAKEPY'
 import json, os, urllib.request, urllib.error
 
 token = os.environ.get('NEON_API_KEY', '')
@@ -152,6 +152,47 @@ else:
         proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
         all_projects.extend(proj_data.get('projects', []))
 
+for p in all_projects:
+    proj_id = p['id']
+    endpoints_data, _ = neon_get(f'/projects/{proj_id}/endpoints')
+    for e in endpoints_data.get('endpoints', []):
+        if e.get('type') == 'read_write':
+            neon_post(f'/projects/{proj_id}/endpoints/{e["id"]}/start')
+NEONWAKEPY
+}
+
+get_neon_endpoint_status() {
+    local api_key="${NEON_API_KEY:-}"
+    [[ -z "$api_key" ]] && echo '{}' && return
+
+    NEON_API_KEY="$api_key" python3 << 'NEONEPY'
+import json, os, urllib.request, urllib.error
+
+token = os.environ.get('NEON_API_KEY', '')
+
+def neon_get(path):
+    req = urllib.request.Request(
+        f'https://console.neon.tech/api/v2{path}',
+        headers={'Authorization': f'Bearer {token}'}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read()), r.status
+    except urllib.error.HTTPError as e:
+        return {}, e.code
+    except Exception:
+        return {}, 0
+
+data, status = neon_get('/projects?limit=100')
+if status == 200:
+    all_projects = data.get('projects', [])
+else:
+    orgs_data, _ = neon_get('/users/me/organizations')
+    all_projects = []
+    for org in orgs_data.get('organizations', []):
+        proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
+        all_projects.extend(proj_data.get('projects', []))
+
 result = {}
 for p in all_projects:
     proj_id = p['id']
@@ -162,7 +203,6 @@ for p in all_projects:
     for e in endpoints_data.get('endpoints', []):
         if e.get('type') != 'read_write':
             continue
-        neon_post(f'/projects/{proj_id}/endpoints/{e["id"]}/start')
         endpoints.append({
             'branch': branch_names.get(e.get('branch_id', ''), '?'),
             'state': e.get('current_state', e.get('state', 'unknown')),
@@ -190,6 +230,10 @@ while true; do
 printf "Waking Render services..." >&2
 curl -s -o /dev/null -X POST https://shoesthatfit-auth-production.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
 curl -s -o /dev/null -X POST https://shoesthatfit-auth-sandbox01.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
+printf "\r\033[K" >&2
+
+printf "Waking Neon endpoints..." >&2
+wake_neon_endpoints
 printf "\r\033[K" >&2
 
 printf "Fetching Render.com service status..." >&2
