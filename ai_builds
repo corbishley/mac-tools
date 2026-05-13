@@ -201,8 +201,6 @@ BE_DELETE_STATUS=$(get_workflow_status "$BACKEND_REPO" "delete-merged-branches.y
 BE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "sandbox01-rebuild.yml")
 IOS_CI_STATUS=$(get_workflow_status "$IOS_REPO" "ci-production.yml")
 IOS_CI_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "ci-sandbox01.yml")
-IOS_CD_STATUS=$(get_workflow_status "$IOS_REPO" "cd-production.yml")
-IOS_CD_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "cd-sandbox01.yml")
 IOS_DELETE_STATUS=$(get_workflow_status "$IOS_REPO" "delete-merged-branches.yml")
 IOS_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "sandbox01-rebuild.yml")
 printf "\r\033[K" >&2
@@ -226,8 +224,6 @@ be_delete_status          = json.loads('''$BE_DELETE_STATUS''')
 be_sandbox_status         = json.loads('''$BE_SANDBOX_STATUS''')
 ios_ci_status         = json.loads('''$IOS_CI_STATUS''')
 ios_ci_sandbox_status = json.loads('''$IOS_CI_SANDBOX_STATUS''')
-ios_cd_status         = json.loads('''$IOS_CD_STATUS''')
-ios_cd_sandbox_status = json.loads('''$IOS_CD_SANDBOX_STATUS''')
 ios_delete_status     = json.loads('''$IOS_DELETE_STATUS''')
 ios_sandbox_status    = json.loads('''$IOS_SANDBOX_STATUS''')
 
@@ -282,7 +278,6 @@ production = [
         ("Migrate Database (production)",  be_migrate_status),
     ]),
     ("$IOS_REPO", [
-        ("CD – TestFlight (production)",   ios_cd_status),
         ("CI (production)",                ios_ci_status),
     ]),
 ]
@@ -293,7 +288,6 @@ sandbox = [
         ("Migrate Database (sandbox01)",   be_migrate_sandbox_status),
     ]),
     ("$IOS_REPO", [
-        ("CD – TestFlight (sandbox01)",    ios_cd_sandbox_status),
         ("CI (sandbox01)",                 ios_ci_sandbox_status),
     ]),
 ]
