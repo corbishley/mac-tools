@@ -58,7 +58,10 @@ get_gh_actions_billing() {
     month=$(date +%-m)
 
     # Old /settings/billing/actions endpoint returned 410; use new usage API with month filter.
-    data=$(gh api "/orgs/${GITHUB_ORG}/settings/billing/usage?year=${year}&month=${month}" 2>/dev/null) || {
+    # --paginate follows Link headers so we don't miss items beyond page 1.
+    # --jq streams each usageItem as a separate line of NDJSON.
+    data=$(gh api --paginate "/orgs/${GITHUB_ORG}/settings/billing/usage?year=${year}&month=${month}" \
+        --jq '.usageItems[]?' 2>/dev/null) || {
         echo '{"total_minutes_used":0,"included_minutes":2000,"minutes_used_breakdown":{}}'
         return
     }
@@ -70,7 +73,11 @@ import json, sys
 MULTIPLIERS = {'UBUNTU': 1, 'WINDOWS': 2, 'MACOS': 10}
 
 raw = {}
-for item in json.load(sys.stdin).get('usageItems', []):
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    item = json.loads(line)
     if item.get('product') != 'actions':
         continue
     qty = int(item.get('quantity', 0))
