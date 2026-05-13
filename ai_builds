@@ -187,8 +187,10 @@ get_workflow_status() {
 
 while true; do
 
+printf "Waking Render services..." >&2
 curl -s -o /dev/null -X POST https://shoesthatfit-auth-production.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
 curl -s -o /dev/null -X POST https://shoesthatfit-auth-sandbox01.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
+printf "\r\033[K" >&2
 
 printf "Fetching Render.com service status..." >&2
 RENDER_SERVICES=$(get_render_service_status)
@@ -362,7 +364,7 @@ def print_neon_section(env_key):
     print()
 
 print("── Rebuilds ─────────────────────────────────────────────────────")
-
+print("sandbox01")
 for repo, run in rebuilds:
     light, state = workflow_light(run)
     print(f"{light} {repo:<{RB_W}}  {state}")
