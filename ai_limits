@@ -67,12 +67,13 @@ get_gh_actions_billing() {
     }
 
     echo "$data" | python3 -c "
-import json, sys
+import json, sys, math
 
 # GitHub multipliers: raw runner minutes → billed minutes toward quota
 MULTIPLIERS = {'UBUNTU': 1, 'WINDOWS': 2, 'MACOS': 10}
 
 raw = {}
+billed = 0
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -80,7 +81,8 @@ for line in sys.stdin:
     item = json.loads(line)
     if item.get('product') != 'actions':
         continue
-    qty = int(item.get('quantity', 0))
+    # GitHub rounds each job up to the nearest whole minute before applying multiplier
+    qty = math.ceil(item.get('quantity', 0))
     sku = item.get('sku', '').lower()
     if 'linux' in sku:
         key = 'UBUNTU'
@@ -91,8 +93,8 @@ for line in sys.stdin:
     else:
         key = item.get('sku', 'Other')
     raw[key] = raw.get(key, 0) + qty
+    billed += qty * MULTIPLIERS.get(key, 1)
 
-billed = sum(v * MULTIPLIERS.get(k, 1) for k, v in raw.items())
 print(json.dumps({'total_minutes_used': billed, 'included_minutes': 2000, 'minutes_used_breakdown': raw}))
 "
 }
