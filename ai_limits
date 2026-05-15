@@ -67,13 +67,13 @@ get_gh_actions_billing() {
     }
 
     echo "$data" | python3 -c "
-import json, sys, math
+import json, sys
 
 # GitHub multipliers: raw runner minutes → billed minutes toward quota
 MULTIPLIERS = {'UBUNTU': 1, 'WINDOWS': 2, 'MACOS': 10}
 
 raw = {}
-billed = 0
+billed = 0.0
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -81,8 +81,7 @@ for line in sys.stdin:
     item = json.loads(line)
     if item.get('product') != 'actions':
         continue
-    # GitHub rounds each job up to the nearest whole minute before applying multiplier
-    qty = math.ceil(item.get('quantity', 0))
+    qty = item.get('quantity', 0)
     sku = item.get('sku', '').lower()
     if 'linux' in sku:
         key = 'UBUNTU'
@@ -92,7 +91,7 @@ for line in sys.stdin:
         key = 'WINDOWS'
     else:
         key = item.get('sku', 'Other')
-    raw[key] = raw.get(key, 0) + qty
+    raw[key] = raw.get(key, 0.0) + qty
     billed += qty * MULTIPLIERS.get(key, 1)
 
 print(json.dumps({'total_minutes_used': billed, 'included_minutes': 2000, 'minutes_used_breakdown': raw}))
@@ -458,9 +457,9 @@ light = traffic_light(time_frac, usage_frac)
 b     = bar(usage_frac, elapsed_frac)
 reset_str = f"resets {month_end_dt.astimezone().strftime('%b %d')} (in {fmt_duration(int(remaining_secs))})"
 
-print(f"{light} {'Total':<{LABEL_W}} : {b}  {gh_total_mins:4d}/{gh_allowance} min ({usage_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {reset_str}")
+print(f"{light} {'Total':<{LABEL_W}} : {b}  {gh_total_mins:.1f}/{gh_allowance} min ({usage_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {reset_str}")
 MULT = {'Ubuntu': 1, 'Windows': 2, 'Macos': 10}
-breakdown_parts = [f"{k.capitalize()}: {v} min raw (×{MULT.get(k.capitalize(), 1)})" for k, v in gh_breakdown.items() if v]
+breakdown_parts = [f"{k.capitalize()}: {v:.2f} min raw (×{MULT.get(k.capitalize(), 1)})" for k, v in gh_breakdown.items() if v]
 if breakdown_parts:
     print(f"  {'':{LABEL_W + 4}}{',   '.join(breakdown_parts)}")
 
