@@ -9,6 +9,8 @@
 
 set -uo pipefail
 
+trap 'printf "\r\033[K\n"; exit 130' INT
+
 REFRESH_MINS="${1:-}"
 GITHUB_ORG="${GITHUB_ORG:-}"
 
@@ -183,19 +185,22 @@ def neon_get(path):
     except Exception:
         return {}, 0
 
-all_projects = []
+try:
+    all_projects = []
 
-# Try personal projects; if the account is org-scoped the API returns 400
-data, status = neon_get('/projects?limit=100')
-if status == 200:
-    all_projects.extend(data.get('projects', []))
-else:
-    orgs_data, _ = neon_get('/users/me/organizations')
-    for org in orgs_data.get('organizations', []):
-        proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
-        all_projects.extend(proj_data.get('projects', []))
+    # Try personal projects; if the account is org-scoped the API returns 400
+    data, status = neon_get('/projects?limit=100')
+    if status == 200:
+        all_projects.extend(data.get('projects', []))
+    else:
+        orgs_data, _ = neon_get('/users/me/organizations')
+        for org in orgs_data.get('organizations', []):
+            proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
+            all_projects.extend(proj_data.get('projects', []))
 
-print(json.dumps({'projects': all_projects}))
+    print(json.dumps({'projects': all_projects}))
+except KeyboardInterrupt:
+    sys.exit(130)
 NEONPY
 }
 
@@ -249,29 +254,30 @@ def cf_get(path):
     except Exception:
         return {}
 
-# Account ID
-result = cf_get('/accounts?per_page=1').get('result', [])
-if not result:
-    print(json.dumps({'pages_builds': 0, 'workers_requests': 0, 'has_key': True}))
-    sys.exit(0)
-account_id = result[0]['id']
-
-# Pages builds this month
-total_builds = 0
-for proj in cf_get(f'/accounts/{account_id}/pages/projects?per_page=100').get('result', []):
-    pname = proj['name']
-    for d in cf_get(f'/accounts/{account_id}/pages/projects/{pname}/deployments?per_page=100').get('result', []):
-        try:
-            dt = datetime.fromisoformat(d.get('created_on', '').replace('Z', '+00:00'))
-            if dt >= month_start_dt:
-                total_builds += 1
-        except Exception:
-            pass
-
-# Workers requests today via GraphQL
-workers_requests = 0
 try:
-    query = json.dumps({'query': '''{
+    # Account ID
+    result = cf_get('/accounts?per_page=1').get('result', [])
+    if not result:
+        print(json.dumps({'pages_builds': 0, 'workers_requests': 0, 'has_key': True}))
+        sys.exit(0)
+    account_id = result[0]['id']
+
+    # Pages builds this month
+    total_builds = 0
+    for proj in cf_get(f'/accounts/{account_id}/pages/projects?per_page=100').get('result', []):
+        pname = proj['name']
+        for d in cf_get(f'/accounts/{account_id}/pages/projects/{pname}/deployments?per_page=100').get('result', []):
+            try:
+                dt = datetime.fromisoformat(d.get('created_on', '').replace('Z', '+00:00'))
+                if dt >= month_start_dt:
+                    total_builds += 1
+            except Exception:
+                pass
+
+    # Workers requests today via GraphQL
+    workers_requests = 0
+    try:
+        query = json.dumps({'query': '''{
   viewer {
     accounts(filter: {accountTag: "%s"}) {
       workersInvocationsAdaptive(
@@ -281,20 +287,22 @@ try:
     }
   }
 }''' % (account_id, day_start, day_end)})
-    req = urllib.request.Request(
-        'https://api.cloudflare.com/client/v4/graphql',
-        data=query.encode(),
-        headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    )
-    with urllib.request.urlopen(req, timeout=15) as r:
-        gql = json.loads(r.read())
-        for a in gql.get('data', {}).get('viewer', {}).get('accounts', []):
-            for w in a.get('workersInvocationsAdaptive', []):
-                workers_requests += w.get('sum', {}).get('requests', 0)
-except Exception:
-    pass
+        req = urllib.request.Request(
+            'https://api.cloudflare.com/client/v4/graphql',
+            data=query.encode(),
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            gql = json.loads(r.read())
+            for a in gql.get('data', {}).get('viewer', {}).get('accounts', []):
+                for w in a.get('workersInvocationsAdaptive', []):
+                    workers_requests += w.get('sum', {}).get('requests', 0)
+    except Exception:
+        pass
 
-print(json.dumps({'pages_builds': total_builds, 'workers_requests': workers_requests, 'has_key': True}))
+    print(json.dumps({'pages_builds': total_builds, 'workers_requests': workers_requests, 'has_key': True}))
+except KeyboardInterrupt:
+    sys.exit(130)
 CFPY
 }
 
@@ -340,8 +348,9 @@ printf "\r\033[K" >&2
 # --- Display ---
 clear
 python3 << PYEOF
-import json, sys, math
+import json, sys, math, signal
 from datetime import datetime, timezone
+signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
 
 data = json.loads('''$RESPONSE''')
 claude_api_error = $CLAUDE_API_ERROR
