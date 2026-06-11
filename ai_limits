@@ -117,7 +117,7 @@ print(f'{n.year}-{n.month:02d}-01T00:00:00+00:00')
     service_ids=$(curl -sf \
         -H "Authorization: Bearer $api_key" \
         "https://api.render.com/v1/services?limit=100" | \
-        python3 -c "import json,sys; [print(s['service']['id']) for s in json.load(sys.stdin)]" 2>/dev/null) || return 0
+        python3 -c "import json,sys; [print(s['service']['id']) for s in json.load(sys.stdin)]" 2>/dev/null) || { echo 0; return; }
 
     local total_ms=0
     for svc_id in $service_ids; do
@@ -300,29 +300,35 @@ CFPY
 
 printf "Fetching GitHub Actions usage..." >&2
 GH_BILLING=$(get_gh_actions_billing)
+GH_BILLING=${GH_BILLING:-'{"total_minutes_used":0,"included_minutes":2000,"minutes_used_breakdown":{}}'}
 printf "\r\033[K" >&2
 
 printf "Fetching Render.com usage..." >&2
 RENDER_MINS=$(get_render_minutes)
+RENDER_MINS=${RENDER_MINS:-0}
 printf "\r\033[K" >&2
 
 printf "Fetching Cloudflare usage..." >&2
 CF_DATA=$(get_cf_data)
+CF_DATA=${CF_DATA:-'{"pages_builds":0,"workers_requests":0,"has_key":false}'}
 printf "\r\033[K" >&2
 
 printf "Fetching Neon usage..." >&2
 NEON_PROJECTS_RAW=$(get_neon_projects)
+NEON_PROJECTS_RAW=${NEON_PROJECTS_RAW:-'{"projects":[]}'}
 NEON_STORAGE_JSON="{}"
 if [[ "${NEON_API_KEY:-}" != "" ]]; then
     while IFS= read -r proj_id; do
         [[ -z "$proj_id" ]] && continue
         sb=$(get_neon_branch_storage "$proj_id")
+        sb=${sb:-0}
         NEON_STORAGE_JSON=$(python3 -c "
 import json
 m = json.loads('$NEON_STORAGE_JSON')
 m['$proj_id'] = $sb
 print(json.dumps(m))
-")
+") || true
+        NEON_STORAGE_JSON=${NEON_STORAGE_JSON:-"{}"}
     done < <(echo "$NEON_PROJECTS_RAW" | python3 -c "
 import json, sys
 for p in json.load(sys.stdin).get('projects', []):

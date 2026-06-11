@@ -238,14 +238,17 @@ printf "\r\033[K" >&2
 
 printf "Fetching Render.com service status..." >&2
 RENDER_SERVICES=$(get_render_service_status)
+RENDER_SERVICES=${RENDER_SERVICES:-'[]'}
 printf "\r\033[K" >&2
 
 printf "Fetching Neon projects..." >&2
 NEON_PROJECTS_RAW=$(get_neon_projects)
+NEON_PROJECTS_RAW=${NEON_PROJECTS_RAW:-'{"projects":[]}'}
 printf "\r\033[K" >&2
 
 printf "Fetching Neon endpoint status..." >&2
 NEON_ENDPOINT_STATUS=$(get_neon_endpoint_status)
+NEON_ENDPOINT_STATUS=${NEON_ENDPOINT_STATUS:-'{}'}
 printf "\r\033[K" >&2
 
 printf "Fetching workflow statuses..." >&2
