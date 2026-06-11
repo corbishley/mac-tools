@@ -6,6 +6,8 @@
 
 set -uo pipefail
 
+trap 'printf "\r\033[K\n"; exit 130' INT
+
 # --- Configuration ---
 GITHUB_ORG="${GITHUB_ORG:-}"
 BACKEND_REPO="${BACKEND_REPO:-backend}"
@@ -25,7 +27,7 @@ get_render_service_status() {
     [[ -z "$api_key" ]] && echo '[]' && return
 
     RENDER_API_KEY="$api_key" python3 << 'RDPY'
-import json, os, urllib.request
+import json, sys, os, urllib.request
 
 api_key = os.environ['RENDER_API_KEY']
 
@@ -40,31 +42,34 @@ def render_get(path):
     except Exception:
         return []
 
-services = render_get('/services?limit=100')
-result = []
+try:
+    services = render_get('/services?limit=100')
+    result = []
 
-for item in services:
-    svc = item.get('service', item)
-    svc_id   = svc.get('id', '')
-    svc_name = svc.get('name', svc_id)
-    svc_type = svc.get('type', '')
+    for item in services:
+        svc = item.get('service', item)
+        svc_id   = svc.get('id', '')
+        svc_name = svc.get('name', svc_id)
+        svc_type = svc.get('type', '')
 
-    deploys = render_get(f'/services/{svc_id}/deploys?limit=1')
-    deploy_status = None
-    deploy_at = None
-    if deploys:
-        d = deploys[0].get('deploy', deploys[0])
-        deploy_status = d.get('status')
-        deploy_at = d.get('updatedAt') or d.get('createdAt')
+        deploys = render_get(f'/services/{svc_id}/deploys?limit=1')
+        deploy_status = None
+        deploy_at = None
+        if deploys:
+            d = deploys[0].get('deploy', deploys[0])
+            deploy_status = d.get('status')
+            deploy_at = d.get('updatedAt') or d.get('createdAt')
 
-    result.append({
-        'name': svc_name,
-        'type': svc_type,
-        'deploy_status': deploy_status,
-        'deploy_at': deploy_at,
-    })
+        result.append({
+            'name': svc_name,
+            'type': svc_type,
+            'deploy_status': deploy_status,
+            'deploy_at': deploy_at,
+        })
 
-print(json.dumps(result))
+    print(json.dumps(result))
+except KeyboardInterrupt:
+    sys.exit(130)
 RDPY
 }
 
@@ -91,19 +96,22 @@ def neon_get(path):
     except Exception:
         return {}, 0
 
-all_projects = []
+try:
+    all_projects = []
 
-# Try personal projects; if the account is org-scoped the API returns 400
-data, status = neon_get('/projects?limit=100')
-if status == 200:
-    all_projects.extend(data.get('projects', []))
-else:
-    orgs_data, _ = neon_get('/users/me/organizations')
-    for org in orgs_data.get('organizations', []):
-        proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
-        all_projects.extend(proj_data.get('projects', []))
+    # Try personal projects; if the account is org-scoped the API returns 400
+    data, status = neon_get('/projects?limit=100')
+    if status == 200:
+        all_projects.extend(data.get('projects', []))
+    else:
+        orgs_data, _ = neon_get('/users/me/organizations')
+        for org in orgs_data.get('organizations', []):
+            proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
+            all_projects.extend(proj_data.get('projects', []))
 
-print(json.dumps({'projects': all_projects}))
+    print(json.dumps({'projects': all_projects}))
+except KeyboardInterrupt:
+    sys.exit(130)
 NEONPY
 }
 
@@ -112,7 +120,7 @@ wake_neon_endpoints() {
     [[ -z "$api_key" ]] && return
 
     NEON_API_KEY="$api_key" python3 << 'NEONWAKEPY'
-import json, os, urllib.request, urllib.error
+import json, sys, os, urllib.request, urllib.error
 
 token = os.environ.get('NEON_API_KEY', '')
 
@@ -142,22 +150,25 @@ def neon_post(path):
     except Exception:
         return 0
 
-data, status = neon_get('/projects?limit=100')
-if status == 200:
-    all_projects = data.get('projects', [])
-else:
-    orgs_data, _ = neon_get('/users/me/organizations')
-    all_projects = []
-    for org in orgs_data.get('organizations', []):
-        proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
-        all_projects.extend(proj_data.get('projects', []))
+try:
+    data, status = neon_get('/projects?limit=100')
+    if status == 200:
+        all_projects = data.get('projects', [])
+    else:
+        orgs_data, _ = neon_get('/users/me/organizations')
+        all_projects = []
+        for org in orgs_data.get('organizations', []):
+            proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
+            all_projects.extend(proj_data.get('projects', []))
 
-for p in all_projects:
-    proj_id = p['id']
-    endpoints_data, _ = neon_get(f'/projects/{proj_id}/endpoints')
-    for e in endpoints_data.get('endpoints', []):
-        if e.get('type') == 'read_write':
-            neon_post(f'/projects/{proj_id}/endpoints/{e["id"]}/start')
+    for p in all_projects:
+        proj_id = p['id']
+        endpoints_data, _ = neon_get(f'/projects/{proj_id}/endpoints')
+        for e in endpoints_data.get('endpoints', []):
+            if e.get('type') == 'read_write':
+                neon_post(f'/projects/{proj_id}/endpoints/{e["id"]}/start')
+except KeyboardInterrupt:
+    sys.exit(130)
 NEONWAKEPY
 }
 
@@ -166,7 +177,7 @@ get_neon_endpoint_status() {
     [[ -z "$api_key" ]] && echo '{}' && return
 
     NEON_API_KEY="$api_key" python3 << 'NEONEPY'
-import json, os, urllib.request, urllib.error
+import json, sys, os, urllib.request, urllib.error
 
 token = os.environ.get('NEON_API_KEY', '')
 
@@ -183,34 +194,37 @@ def neon_get(path):
     except Exception:
         return {}, 0
 
-data, status = neon_get('/projects?limit=100')
-if status == 200:
-    all_projects = data.get('projects', [])
-else:
-    orgs_data, _ = neon_get('/users/me/organizations')
-    all_projects = []
-    for org in orgs_data.get('organizations', []):
-        proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
-        all_projects.extend(proj_data.get('projects', []))
+try:
+    data, status = neon_get('/projects?limit=100')
+    if status == 200:
+        all_projects = data.get('projects', [])
+    else:
+        orgs_data, _ = neon_get('/users/me/organizations')
+        all_projects = []
+        for org in orgs_data.get('organizations', []):
+            proj_data, _ = neon_get(f'/projects?limit=100&org_id={org["id"]}')
+            all_projects.extend(proj_data.get('projects', []))
 
-result = {}
-for p in all_projects:
-    proj_id = p['id']
-    branches_data, _ = neon_get(f'/projects/{proj_id}/branches')
-    branch_names = {b['id']: b['name'] for b in branches_data.get('branches', [])}
-    endpoints_data, _ = neon_get(f'/projects/{proj_id}/endpoints')
-    endpoints = []
-    for e in endpoints_data.get('endpoints', []):
-        if e.get('type') != 'read_write':
-            continue
-        endpoints.append({
-            'branch': branch_names.get(e.get('branch_id', ''), '?'),
-            'state': e.get('current_state', e.get('state', 'unknown')),
-            'updated_at': e.get('updated_at', ''),
-        })
-    result[proj_id] = endpoints
+    result = {}
+    for p in all_projects:
+        proj_id = p['id']
+        branches_data, _ = neon_get(f'/projects/{proj_id}/branches')
+        branch_names = {b['id']: b['name'] for b in branches_data.get('branches', [])}
+        endpoints_data, _ = neon_get(f'/projects/{proj_id}/endpoints')
+        endpoints = []
+        for e in endpoints_data.get('endpoints', []):
+            if e.get('type') != 'read_write':
+                continue
+            endpoints.append({
+                'branch': branch_names.get(e.get('branch_id', ''), '?'),
+                'state': e.get('current_state', e.get('state', 'unknown')),
+                'updated_at': e.get('updated_at', ''),
+            })
+        result[proj_id] = endpoints
 
-print(json.dumps(result))
+    print(json.dumps(result))
+except KeyboardInterrupt:
+    sys.exit(130)
 NEONEPY
 }
 
@@ -269,8 +283,9 @@ printf "\r\033[K" >&2
 # --- Display ---
 clear
 python3 << PYEOF
-import json, sys
+import json, sys, signal
 from datetime import datetime, timezone
+signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
 
 render_services    = json.loads('''$RENDER_SERVICES''')
 neon_projects_raw  = json.loads('''$NEON_PROJECTS_RAW''')
