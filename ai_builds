@@ -356,23 +356,23 @@ def render_deploy_light(status):
 
 production = [
     ("$BACKEND_REPO", [
-        ("CD – Deploy (production)",       be_cd_status),
+        ("CD (production)",       be_cd_status),
         ("CI (production)",                be_ci_status),
         ("Migrate Database (production)",  be_migrate_status),
     ]),
     ("$IOS_REPO", [
-        ("CD – Deploy (production)",       ios_cd_status),
+        ("CD (production)",       ios_cd_status),
         ("CI (production)",                ios_ci_status),
     ]),
 ]
 sandbox = [
     ("$BACKEND_REPO", [
-        ("CD – Deploy (sandbox01)",        be_cd_sandbox_status),
+        ("CD (sandbox01)",        be_cd_sandbox_status),
         ("CI (sandbox01)",                 be_ci_sandbox_status),
         ("Migrate Database (sandbox01)",   be_migrate_sandbox_status),
     ]),
     ("$IOS_REPO", [
-        ("CD – Deploy (sandbox01)",        ios_cd_sandbox_status),
+        ("CD (sandbox01)",        ios_cd_sandbox_status),
         ("CI (sandbox01)",                 ios_ci_sandbox_status),
     ]),
 ]
