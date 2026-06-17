@@ -234,13 +234,22 @@ get_workflow_status() {
     local workflow="$2"
     local branch="${3:-}"
     local event="${4:-}"
-    local url="repos/${GITHUB_ORG}/${repo}/actions/workflows/${workflow}/runs?per_page=1"
+    local title_filter="${5:-}"
+    local per_page=1
+    [[ -n "$title_filter" ]] && per_page=20
+    local url="repos/${GITHUB_ORG}/${repo}/actions/workflows/${workflow}/runs?per_page=${per_page}"
     [[ -n "$branch" ]] && url="${url}&branch=${branch}"
     [[ -n "$event" ]] && url="${url}&event=${event}"
     local result
-    result=$(gh api "$url" \
-        --jq '.workflow_runs[0] | if . then {conclusion: .conclusion, status: .status, created_at: .created_at} else null end' \
-        2>/dev/null) || result='null'
+    if [[ -n "$title_filter" ]]; then
+        result=$(gh api "$url" \
+            --jq "[.workflow_runs[] | select(.display_title | contains(\"$title_filter\"))] | first | if . then {conclusion: .conclusion, status: .status, created_at: .created_at} else null end" \
+            2>/dev/null) || result='null'
+    else
+        result=$(gh api "$url" \
+            --jq '.workflow_runs[0] | if . then {conclusion: .conclusion, status: .status, created_at: .created_at} else null end' \
+            2>/dev/null) || result='null'
+    fi
     echo "${result:-null}"
 }
 
@@ -271,18 +280,18 @@ NEON_ENDPOINT_STATUS=${NEON_ENDPOINT_STATUS:-'{}'}
 printf "\r\033[K" >&2
 
 printf "Fetching workflow statuses..." >&2
-BE_CI_STATUS=$(get_workflow_status "$BACKEND_REPO" "ci.yml" "production")
-BE_CI_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "ci.yml" "" "workflow_dispatch")
-BE_CD_STATUS=$(get_workflow_status "$BACKEND_REPO" "cd.yml" "production")
-BE_CD_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "cd.yml" "" "workflow_dispatch")
-BE_MIGRATE_STATUS=$(get_workflow_status "$BACKEND_REPO" "migrate-database.yml" "production")
-BE_MIGRATE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "migrate-database.yml" "" "workflow_dispatch")
+BE_CI_STATUS=$(get_workflow_status "$BACKEND_REPO" "ci.yml" "" "" "production")
+BE_CI_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "ci.yml" "" "" "sandbox01")
+BE_CD_STATUS=$(get_workflow_status "$BACKEND_REPO" "cd.yml" "" "" "production")
+BE_CD_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "cd.yml" "" "" "sandbox01")
+BE_MIGRATE_STATUS=$(get_workflow_status "$BACKEND_REPO" "migrate-database.yml" "" "" "production")
+BE_MIGRATE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "migrate-database.yml" "" "" "sandbox01")
 BE_DELETE_STATUS=$(get_workflow_status "$BACKEND_REPO" "delete-merged-branches.yml")
 BE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "rebuild-sandboxes.yml")
-IOS_CI_STATUS=$(get_workflow_status "$IOS_REPO" "ci.yml" "production")
-IOS_CI_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "ci.yml" "" "workflow_dispatch")
-IOS_CD_STATUS=$(get_workflow_status "$IOS_REPO" "cd.yml" "production")
-IOS_CD_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "cd.yml" "" "workflow_dispatch")
+IOS_CI_STATUS=$(get_workflow_status "$IOS_REPO" "ci.yml" "" "" "production")
+IOS_CI_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "ci.yml" "" "" "sandbox01")
+IOS_CD_STATUS=$(get_workflow_status "$IOS_REPO" "cd.yml" "" "" "production")
+IOS_CD_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "cd.yml" "" "" "sandbox01")
 IOS_DELETE_STATUS=$(get_workflow_status "$IOS_REPO" "delete-merged-branches.yml")
 IOS_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "rebuild-sandboxes.yml")
 printf "\r\033[K" >&2
