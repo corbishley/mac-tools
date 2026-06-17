@@ -1,1 +1,4 @@
 .claude/
+widgets/MacToolsWidgets.xcodeproj/
+widgets/*.xcworkspace/
+widgets/xcuserdata/

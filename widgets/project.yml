@@ -1,0 +1,92 @@
+name: MacToolsWidgets
+options:
+  bundleIdPrefix: me.shoesthatfit
+  deploymentTarget:
+    macOS: "14.0"
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  MacToolsWidgets:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+      - path: Shared
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleName: MacToolsWidgets
+        CFBundleDisplayName: Mac Tools Widgets
+        NSPrincipalClass: NSApplication
+    entitlements:
+      path: App/MacToolsWidgets.entitlements
+      properties:
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.shoesthatfit.MacToolsWidgets
+        PRODUCT_NAME: MacToolsWidgets
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - target: AILimitsWidget
+        embed: true
+      - target: AIBuildsWidget
+        embed: true
+
+  AILimitsWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: AILimitsWidget
+      - path: Shared
+    info:
+      path: AILimitsWidget/Info.plist
+      properties:
+        CFBundleName: AILimitsWidget
+        CFBundleDisplayName: AI Limits
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: AILimitsWidget/AILimitsWidget.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.shoesthatfit.MacToolsWidgets.AILimitsWidget
+        PRODUCT_NAME: AILimitsWidget
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+
+  AIBuildsWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: AIBuildsWidget
+      - path: Shared
+    info:
+      path: AIBuildsWidget/Info.plist
+      properties:
+        CFBundleName: AIBuildsWidget
+        CFBundleDisplayName: AI Builds
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: AIBuildsWidget/AIBuildsWidget.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.shoesthatfit.MacToolsWidgets.AIBuildsWidget
+        PRODUCT_NAME: AIBuildsWidget
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
