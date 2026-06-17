@@ -12,6 +12,7 @@ trap 'printf "\r\033[K\n"; exit 130' INT
 GITHUB_ORG="${GITHUB_ORG:-}"
 BACKEND_REPO="${BACKEND_REPO:-backend}"
 IOS_REPO="${IOS_REPO:-ios-app}"
+ENVIRONMENTS=(production sandbox01)  # add sandbox02, sandbox03 etc. here
 
 # --- Keychain fallback for service API keys ---
 if [[ -z "${NEON_API_KEY:-}" ]]; then
@@ -256,8 +257,10 @@ get_workflow_status() {
 while true; do
 
 printf "Waking Render services..." >&2
-curl -s -o /dev/null -X POST https://shoesthatfit-auth-production.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
-curl -s -o /dev/null -X POST https://shoesthatfit-auth-sandbox01.onrender.com/v1/auth/login -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
+for env in "${ENVIRONMENTS[@]}"; do
+    curl -s -o /dev/null -X POST "https://shoesthatfit-auth-${env}.onrender.com/v1/auth/login" \
+        -H "Content-Type: application/json" -d '{"email":"wake@example.com","password":"wake"}' &
+done
 printf "\r\033[K" >&2
 
 printf "Waking Neon endpoints..." >&2
@@ -280,18 +283,24 @@ NEON_ENDPOINT_STATUS=${NEON_ENDPOINT_STATUS:-'{}'}
 printf "\r\033[K" >&2
 
 printf "Fetching workflow statuses..." >&2
-BE_CI_STATUS=$(get_workflow_status "$BACKEND_REPO" "ci.yml" "" "" "production")
-BE_CI_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "ci.yml" "" "" "sandbox01")
-BE_CD_STATUS=$(get_workflow_status "$BACKEND_REPO" "cd.yml" "" "" "production")
-BE_CD_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "cd.yml" "" "" "sandbox01")
-BE_MIGRATE_STATUS=$(get_workflow_status "$BACKEND_REPO" "migrate-database.yml" "" "" "production")
-BE_MIGRATE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "migrate-database.yml" "" "" "sandbox01")
+WORKFLOW_STATUS='{}'
+for env in "${ENVIRONMENTS[@]}"; do
+    be_ci=$(get_workflow_status "$BACKEND_REPO" "ci.yml" "" "" "$env")
+    be_cd=$(get_workflow_status "$BACKEND_REPO" "cd.yml" "" "" "$env")
+    be_migrate=$(get_workflow_status "$BACKEND_REPO" "migrate-database.yml" "" "" "$env")
+    ios_ci=$(get_workflow_status "$IOS_REPO" "ci.yml" "" "" "$env")
+    ios_cd=$(get_workflow_status "$IOS_REPO" "cd.yml" "" "" "$env")
+    WORKFLOW_STATUS=$(echo "$WORKFLOW_STATUS" | jq \
+        --arg env "$env" \
+        --argjson be_ci "$be_ci" \
+        --argjson be_cd "$be_cd" \
+        --argjson be_migrate "$be_migrate" \
+        --argjson ios_ci "$ios_ci" \
+        --argjson ios_cd "$ios_cd" \
+        '.[$env] = {be_ci: $be_ci, be_cd: $be_cd, be_migrate: $be_migrate, ios_ci: $ios_ci, ios_cd: $ios_cd}')
+done
 BE_DELETE_STATUS=$(get_workflow_status "$BACKEND_REPO" "delete-merged-branches.yml")
 BE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "rebuild-sandboxes.yml")
-IOS_CI_STATUS=$(get_workflow_status "$IOS_REPO" "ci.yml" "" "" "production")
-IOS_CI_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "ci.yml" "" "" "sandbox01")
-IOS_CD_STATUS=$(get_workflow_status "$IOS_REPO" "cd.yml" "" "" "production")
-IOS_CD_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "cd.yml" "" "" "sandbox01")
 IOS_DELETE_STATUS=$(get_workflow_status "$IOS_REPO" "delete-merged-branches.yml")
 IOS_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "rebuild-sandboxes.yml")
 printf "\r\033[K" >&2
@@ -303,24 +312,16 @@ import json, sys, signal
 from datetime import datetime, timezone
 signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
 
-render_services    = json.loads('''$RENDER_SERVICES''')
-neon_projects_raw  = json.loads('''$NEON_PROJECTS_RAW''')
-neon_endpoint_status  = json.loads('''$NEON_ENDPOINT_STATUS''')
-be_ci_status             = json.loads('''$BE_CI_STATUS''')
-be_ci_sandbox_status     = json.loads('''$BE_CI_SANDBOX_STATUS''')
-be_cd_status             = json.loads('''$BE_CD_STATUS''')
-be_cd_sandbox_status     = json.loads('''$BE_CD_SANDBOX_STATUS''')
-be_migrate_status         = json.loads('''$BE_MIGRATE_STATUS''')
-be_migrate_sandbox_status = json.loads('''$BE_MIGRATE_SANDBOX_STATUS''')
-be_delete_status          = json.loads('''$BE_DELETE_STATUS''')
-be_sandbox_status         = json.loads('''$BE_SANDBOX_STATUS''')
-ios_ci_status         = json.loads('''$IOS_CI_STATUS''')
-ios_ci_sandbox_status = json.loads('''$IOS_CI_SANDBOX_STATUS''')
-ios_cd_status         = json.loads('''$IOS_CD_STATUS''')
-ios_cd_sandbox_status = json.loads('''$IOS_CD_SANDBOX_STATUS''')
-ios_delete_status     = json.loads('''$IOS_DELETE_STATUS''')
-ios_sandbox_status    = json.loads('''$IOS_SANDBOX_STATUS''')
+workflow_status      = json.loads('''$WORKFLOW_STATUS''')
+render_services      = json.loads('''$RENDER_SERVICES''')
+neon_projects_raw    = json.loads('''$NEON_PROJECTS_RAW''')
+neon_endpoint_status = json.loads('''$NEON_ENDPOINT_STATUS''')
+be_delete_status     = json.loads('''$BE_DELETE_STATUS''')
+be_sandbox_status    = json.loads('''$BE_SANDBOX_STATUS''')
+ios_delete_status    = json.loads('''$IOS_DELETE_STATUS''')
+ios_sandbox_status   = json.loads('''$IOS_SANDBOX_STATUS''')
 
+environments  = list(workflow_status.keys())
 neon_projects = neon_projects_raw.get('projects', [])
 
 def fmt_abs(dt):
@@ -365,50 +366,30 @@ def render_deploy_light(status):
         'canceled':            ("🟠", "canceled"),
     }.get(status, ("⚪", status or "unknown"))
 
-production = [
-    ("$BACKEND_REPO", [
-        ("CD (production)",       be_cd_status),
-        ("CI (production)",                be_ci_status),
-        ("Migrate Database (production)",  be_migrate_status),
-    ]),
-    ("$IOS_REPO", [
-        ("CD (production)",       ios_cd_status),
-        ("CI (production)",                ios_ci_status),
-    ]),
-]
-sandbox = [
-    ("$BACKEND_REPO", [
-        ("CD (sandbox01)",        be_cd_sandbox_status),
-        ("CI (sandbox01)",                 be_ci_sandbox_status),
-        ("Migrate Database (sandbox01)",   be_migrate_sandbox_status),
-    ]),
-    ("$IOS_REPO", [
-        ("CD (sandbox01)",        ios_cd_sandbox_status),
-        ("CI (sandbox01)",                 ios_ci_sandbox_status),
-    ]),
-]
-rebuilds = [
-    ("$BACKEND_REPO",  be_sandbox_status),
-    ("$IOS_REPO",      ios_sandbox_status),
-]
-delete_branches = [
-    ("$BACKEND_REPO",  be_delete_status),
-    ("$IOS_REPO",      ios_delete_status),
-]
-
-WF_W = max(len(label) for env in [production, sandbox] for _, wfs in env for label, _ in wfs)
-RB_W = max(len(repo) for repo, _ in rebuilds)
-
 neon_ep_rows = [
     (p.get('name', p['id']), ep)
     for p in sorted(neon_projects, key=lambda p: p.get('name', p['id']).lower())
     for ep in neon_endpoint_status.get(p['id'], [])
 ]
-NEP_W = max((len(f"{pname} {ep.get('branch', '?')}") for pname, ep in neon_ep_rows), default=10)
-SVC_W = max((len(s['name']) for s in render_services), default=10)
 
-def print_render_section(env_key):
-    filtered = [s for s in render_services if env_key in s['name'].lower()]
+all_wf_labels = [label
+    for env in environments
+    for label in [f"CD ({env})", f"CI ({env})", f"Migrate Database ({env})"]
+]
+WF_W = max(len(l) for l in all_wf_labels) if all_wf_labels else 10
+
+rebuilds = [
+    ("$BACKEND_REPO", be_sandbox_status),
+    ("$IOS_REPO",     ios_sandbox_status),
+]
+delete_branches = [
+    ("$BACKEND_REPO", be_delete_status),
+    ("$IOS_REPO",     ios_delete_status),
+]
+RB_W = max(len(repo) for repo, _ in rebuilds)
+
+def print_render_section(env):
+    filtered = [s for s in render_services if env in s['name'].lower()]
     if not filtered:
         return
     print("Render.com")
@@ -424,9 +405,9 @@ def print_render_section(env_key):
         print(f"{light} {svc['name']:<{w}}  {state}")
     print()
 
-def print_neon_section(env_key):
+def print_neon_section(env):
     rows = [(pname, ep) for pname, ep in neon_ep_rows
-            if env_key in pname.lower() or env_key in ep.get('branch', '').lower()]
+            if env in pname.lower() or env in ep.get('branch', '').lower()]
     if not rows:
         return
     print("Neon")
@@ -446,7 +427,6 @@ def print_neon_section(env_key):
     print()
 
 print("── Rebuilds ─────────────────────────────────────────────────────")
-print("sandbox01")
 for repo, run in rebuilds:
     light, state = workflow_light(run)
     print(f"{light} {repo:<{RB_W}}  {state}")
@@ -458,18 +438,31 @@ for repo, run in delete_branches:
     light, state = workflow_light(run)
     print(f"{light} {repo:<{DB_W}}  {state}")
 
-for i, (env_name, env_key, wf_groups) in enumerate([("production", "production", production), ("sandbox01", "sandbox", sandbox)]):
-    if i == 0:
-        print()
-    print(f"── Checks {env_name} ──────────────────────────────────────────────")
-    for repo, wfs in wf_groups:
-        print(f"GitHub – {repo}")
-        for label, run in wfs:
-            light, state = workflow_light(run)
-            print(f"{light} {label:<{WF_W}}  {state}")
-        print()
-    print_render_section(env_key)
-    print_neon_section(env_key)
+for env in environments:
+    wf = workflow_status[env]
+    print(f"\n── Checks {env} ──────────────────────────────────────────────")
+
+    print(f"GitHub – $BACKEND_REPO")
+    for label, run in [
+        (f"CD ({env})",               wf['be_cd']),
+        (f"CI ({env})",               wf['be_ci']),
+        (f"Migrate Database ({env})", wf['be_migrate']),
+    ]:
+        light, state = workflow_light(run)
+        print(f"{light} {label:<{WF_W}}  {state}")
+    print()
+
+    print(f"GitHub – $IOS_REPO")
+    for label, run in [
+        (f"CD ({env})", wf['ios_cd']),
+        (f"CI ({env})", wf['ios_ci']),
+    ]:
+        light, state = workflow_light(run)
+        print(f"{light} {label:<{WF_W}}  {state}")
+    print()
+
+    print_render_section(env)
+    print_neon_section(env)
 
 PYEOF
 
