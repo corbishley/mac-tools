@@ -116,11 +116,11 @@ private struct EnvBlock: View {
     var body: some View {
         Group {
             BuildSectionHeader(title: "── \(status.name) ──")
-            BuildRow(label: "\(backendRepo) CD", run: status.backendCD)
-            BuildRow(label: "\(backendRepo) CI", run: status.backendCI)
-            BuildRow(label: "migrate-db",        run: status.backendMigrate)
-            BuildRow(label: "\(iosRepo) CD",     run: status.iosCD)
-            BuildRow(label: "\(iosRepo) CI",     run: status.iosCI)
+            BuildRow(label: "\(backendRepo) CD",      run: status.backendCD)
+            BuildRow(label: "\(backendRepo) CI",      run: status.backendCI)
+            BuildRow(label: "migrate-db",             run: status.backendMigrate)
+            BuildRow(label: "\(iosRepo) CD Testing",  run: status.iosCDTesting)
+            BuildRow(label: "\(iosRepo) CI",          run: status.iosCI)
             if !envRender.isEmpty {
                 BuildSectionHeader(title: "Render")
                 ForEach(envRender, id: \.name) { RenderRow(svc: $0) }
@@ -154,7 +154,7 @@ struct BuildsWidgetView: View {
             }
             .padding(.bottom, 2)
 
-            // Rebuilds + delete (large only)
+            // Rebuilds + delete + iOS release (large only)
             if showSandbox {
                 BuildSectionHeader(title: "── Rebuilds ──")
                 BuildRow(label: backend, run: entry.backendRebuild)
@@ -162,6 +162,8 @@ struct BuildsWidgetView: View {
                 BuildSectionHeader(title: "── Delete merged ──")
                 BuildRow(label: backend, run: entry.backendDeleteBranches)
                 BuildRow(label: ios,     run: entry.iosDeleteBranches)
+                BuildSectionHeader(title: "── iOS Release ──")
+                BuildRow(label: "cd-release", run: entry.iosRelease)
                 Divider()
             }
 

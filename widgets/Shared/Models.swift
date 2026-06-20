@@ -172,7 +172,7 @@ struct EnvironmentStatus {
     let backendCD:     WorkflowRun
     let backendMigrate:WorkflowRun
     let iosCI:         WorkflowRun
-    let iosCD:         WorkflowRun
+    let iosCDTesting:  WorkflowRun
 }
 
 enum RenderDeployStatus: String {
@@ -237,4 +237,5 @@ struct AIBuildsEntry: TimelineEntry {
     let iosRebuild:           WorkflowRun
     let backendDeleteBranches:WorkflowRun
     let iosDeleteBranches:    WorkflowRun
+    let iosRelease:           WorkflowRun
 }

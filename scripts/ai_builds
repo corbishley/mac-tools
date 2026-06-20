@@ -289,20 +289,21 @@ for env in "${ENVIRONMENTS[@]}"; do
     be_cd=$(get_workflow_status "$BACKEND_REPO" "cd.yml" "" "" "$env")
     be_migrate=$(get_workflow_status "$BACKEND_REPO" "migrate-database.yml" "" "" "$env")
     ios_ci=$(get_workflow_status "$IOS_REPO" "ci.yml" "" "" "$env")
-    ios_cd=$(get_workflow_status "$IOS_REPO" "cd.yml" "" "" "$env")
+    ios_cd_testing=$(get_workflow_status "$IOS_REPO" "cd-testing.yml" "" "" "$env")
     WORKFLOW_STATUS=$(echo "$WORKFLOW_STATUS" | jq \
         --arg env "$env" \
         --argjson be_ci "$be_ci" \
         --argjson be_cd "$be_cd" \
         --argjson be_migrate "$be_migrate" \
         --argjson ios_ci "$ios_ci" \
-        --argjson ios_cd "$ios_cd" \
-        '.[$env] = {be_ci: $be_ci, be_cd: $be_cd, be_migrate: $be_migrate, ios_ci: $ios_ci, ios_cd: $ios_cd}')
+        --argjson ios_cd_testing "$ios_cd_testing" \
+        '.[$env] = {be_ci: $be_ci, be_cd: $be_cd, be_migrate: $be_migrate, ios_ci: $ios_ci, ios_cd_testing: $ios_cd_testing}')
 done
 BE_DELETE_STATUS=$(get_workflow_status "$BACKEND_REPO" "delete-merged-branches.yml")
 BE_SANDBOX_STATUS=$(get_workflow_status "$BACKEND_REPO" "rebuild-sandboxes.yml")
 IOS_DELETE_STATUS=$(get_workflow_status "$IOS_REPO" "delete-merged-branches.yml")
 IOS_SANDBOX_STATUS=$(get_workflow_status "$IOS_REPO" "rebuild-sandboxes.yml")
+IOS_RELEASE_STATUS=$(get_workflow_status "$IOS_REPO" "cd-release.yml")
 printf "\r\033[K" >&2
 
 # --- Display ---
@@ -320,6 +321,7 @@ be_delete_status     = json.loads('''$BE_DELETE_STATUS''')
 be_sandbox_status    = json.loads('''$BE_SANDBOX_STATUS''')
 ios_delete_status    = json.loads('''$IOS_DELETE_STATUS''')
 ios_sandbox_status   = json.loads('''$IOS_SANDBOX_STATUS''')
+ios_release_status   = json.loads('''$IOS_RELEASE_STATUS''')
 
 environments  = list(workflow_status.keys())
 neon_projects = neon_projects_raw.get('projects', [])
@@ -374,7 +376,7 @@ neon_ep_rows = [
 
 all_wf_labels = [label
     for env in environments
-    for label in [f"CD ({env})", f"CI ({env})", f"Migrate Database ({env})"]
+    for label in [f"CD Testing ({env})", f"CI ({env})", f"Migrate Database ({env})"]
 ]
 WF_W = max(len(l) for l in all_wf_labels) if all_wf_labels else 10
 
@@ -438,6 +440,11 @@ for repo, run in delete_branches:
     light, state = workflow_light(run)
     print(f"{light} {repo:<{DB_W}}  {state}")
 
+print()
+print("── iOS Release ──────────────────────────────────────────────────")
+light, state = workflow_light(ios_release_status)
+print(f"{light} cd-release  {state}")
+
 for env in environments:
     wf = workflow_status[env]
     print(f"\n── Checks {env} ──────────────────────────────────────────────")
@@ -454,8 +461,8 @@ for env in environments:
 
     print(f"GitHub – $IOS_REPO")
     for label, run in [
-        (f"CD ({env})", wf['ios_cd']),
-        (f"CI ({env})", wf['ios_ci']),
+        (f"CD Testing ({env})", wf['ios_cd_testing']),
+        (f"CI ({env})",         wf['ios_ci']),
     ]:
         light, state = workflow_light(run)
         print(f"{light} {label:<{WF_W}}  {state}")

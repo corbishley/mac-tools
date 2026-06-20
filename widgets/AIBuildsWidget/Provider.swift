@@ -13,7 +13,8 @@ struct AIBuildsProvider: TimelineProvider {
             backendRebuild: .noRuns,
             iosRebuild: .noRuns,
             backendDeleteBranches: .noRuns,
-            iosDeleteBranches: .noRuns
+            iosDeleteBranches: .noRuns,
+            iosRelease: .noRuns
         )
     }
 
@@ -43,7 +44,8 @@ struct AIBuildsProvider: TimelineProvider {
         guard !token.isEmpty, !org.isEmpty else {
             return AIBuildsEntry(date: Date(), environments: [], renderServices: [],
                                  neonEndpoints: [], backendRebuild: .noRuns, iosRebuild: .noRuns,
-                                 backendDeleteBranches: .noRuns, iosDeleteBranches: .noRuns)
+                                 backendDeleteBranches: .noRuns, iosDeleteBranches: .noRuns,
+                                 iosRelease: .noRuns)
         }
 
         async let envStatuses = fetchEnvironments(token: token, org: org, backend: backend, ios: ios)
@@ -53,6 +55,7 @@ struct AIBuildsProvider: TimelineProvider {
         async let iosRebuild  = APIClient.fetchWorkflowRun(token: token, org: org, repo: ios,     workflow: "rebuild-sandboxes.yml")
         async let beDelete    = APIClient.fetchWorkflowRun(token: token, org: org, repo: backend, workflow: "delete-merged-branches.yml")
         async let iosDelete   = APIClient.fetchWorkflowRun(token: token, org: org, repo: ios,     workflow: "delete-merged-branches.yml")
+        async let iosRelease  = APIClient.fetchWorkflowRun(token: token, org: org, repo: ios,     workflow: "cd-release.yml")
 
         return AIBuildsEntry(
             date:                  Date(),
@@ -62,7 +65,8 @@ struct AIBuildsProvider: TimelineProvider {
             backendRebuild:        await beRebuild,
             iosRebuild:            await iosRebuild,
             backendDeleteBranches: await beDelete,
-            iosDeleteBranches:     await iosDelete
+            iosDeleteBranches:     await iosDelete,
+            iosRelease:            await iosRelease
         )
     }
 
@@ -73,15 +77,15 @@ struct AIBuildsProvider: TimelineProvider {
                     async let beCI      = APIClient.fetchWorkflowRun(token: token, org: org, repo: backend, workflow: "ci.yml",                   titleFilter: env)
                     async let beCD      = APIClient.fetchWorkflowRun(token: token, org: org, repo: backend, workflow: "cd.yml",                   titleFilter: env)
                     async let beMigrate = APIClient.fetchWorkflowRun(token: token, org: org, repo: backend, workflow: "migrate-database.yml",    titleFilter: env)
-                    async let iosCI     = APIClient.fetchWorkflowRun(token: token, org: org, repo: ios,     workflow: "ci.yml",                   titleFilter: env)
-                    async let iosCD     = APIClient.fetchWorkflowRun(token: token, org: org, repo: ios,     workflow: "cd.yml",                   titleFilter: env)
+                    async let iosCI         = APIClient.fetchWorkflowRun(token: token, org: org, repo: ios, workflow: "ci.yml",          titleFilter: env)
+                    async let iosCDTesting  = APIClient.fetchWorkflowRun(token: token, org: org, repo: ios, workflow: "cd-testing.yml", titleFilter: env)
                     return EnvironmentStatus(
                         name:          env,
                         backendCI:     await beCI,
                         backendCD:     await beCD,
                         backendMigrate:await beMigrate,
                         iosCI:         await iosCI,
-                        iosCD:         await iosCD
+                        iosCDTesting:  await iosCDTesting
                     )
                 }
             }
