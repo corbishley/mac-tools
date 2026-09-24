@@ -22,14 +22,61 @@ CREDS=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/nu
     exit 1
 }
 
-TOKEN=$(python3 -c "
+TOKEN_INFO=$(python3 -c "
 import sys, json
-d = json.loads('''$CREDS''')
-print(d['claudeAiOauth']['accessToken'])
+d = json.loads('''$CREDS''')['claudeAiOauth']
+scopes = d.get('scopes') or ['user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers', 'user:file_upload']
+print(d.get('accessToken', ''))
+print(d.get('refreshToken', ''))
+print(d.get('expiresAt', 0))
+print(' '.join(scopes))
 ") || {
     echo "Error: Could not parse OAuth token" >&2
     exit 1
 }
+TOKEN=$(sed -n '1p' <<< "$TOKEN_INFO")
+CLAUDE_REFRESH_TOKEN=$(sed -n '2p' <<< "$TOKEN_INFO")
+CLAUDE_EXPIRES_AT=$(sed -n '3p' <<< "$TOKEN_INFO")
+CLAUDE_SCOPES=$(sed -n '4p' <<< "$TOKEN_INFO")
+
+# --- Refresh the Claude OAuth access token if it's expired/about to expire ---
+# The access token is short-lived; normally `claude` refreshes it in the
+# background on each use. If it hasn't been run in a while, mint a fresh
+# access token ourselves (in-memory only — never written back to the
+# keychain, so this can't collide with the real claude CLI's credential store).
+CLAUDE_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+refresh_claude_token() {
+    [[ -z "$CLAUDE_REFRESH_TOKEN" ]] && return 1
+    local resp new_token
+    resp=$(python3 -c "
+import json
+print(json.dumps({
+    'grant_type': 'refresh_token',
+    'refresh_token': '''$CLAUDE_REFRESH_TOKEN''',
+    'client_id': '$CLAUDE_CLIENT_ID',
+    'scope': '''$CLAUDE_SCOPES''',
+}))" | curl -sf -X POST \
+        -H "Content-Type: application/json" \
+        --data-binary @- \
+        "https://platform.claude.com/v1/oauth/token") || return 1
+
+    new_token=$(python3 -c "
+import json
+try:
+    print(json.loads('''$resp''').get('access_token', ''))
+except Exception:
+    pass
+")
+    [[ -z "$new_token" ]] && return 1
+    TOKEN="$new_token"
+    return 0
+}
+
+NOW_MS=$(($(date +%s) * 1000))
+if [[ -n "$CLAUDE_EXPIRES_AT" && "$CLAUDE_EXPIRES_AT" -gt 0 && $((CLAUDE_EXPIRES_AT - NOW_MS)) -lt 60000 ]]; then
+    refresh_claude_token || true
+fi
 
 # --- Keychain fallback for service API keys ---
 # These supplement env vars — keychain wins if env var is empty.
@@ -43,14 +90,23 @@ export NEON_API_KEY CF_API_TOKEN
 
 # --- Call the Claude usage API ---
 CLAUDE_API_ERROR=0
-RESPONSE=$(curl -sf \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "anthropic-beta: oauth-2025-04-20" \
-    -H "User-Agent: claude-code/$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" \
-    "https://api.anthropic.com/api/oauth/usage") || {
-    echo "Warning: Claude API request failed, continuing without Claude usage data" >&2
-    RESPONSE='{}'
-    CLAUDE_API_ERROR=1
+call_claude_usage() {
+    curl -sf \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        -H "User-Agent: claude-code/$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" \
+        "https://api.anthropic.com/api/oauth/usage"
+}
+
+RESPONSE=$(call_claude_usage) || {
+    # Access token may have expired since the freshness check above — refresh and retry once.
+    if refresh_claude_token && RESPONSE=$(call_claude_usage); then
+        :
+    else
+        echo "Warning: Claude API request failed, continuing without Claude usage data" >&2
+        RESPONSE='{}'
+        CLAUDE_API_ERROR=1
+    fi
 }
 
 # --- GitHub Actions billing ---
