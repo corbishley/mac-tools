@@ -158,60 +158,54 @@ print(json.dumps({'total_minutes_used': billed, 'included_minutes': 2000, 'minut
 
 # --- Render.com build minutes ---
 RENDER_ALLOWANCE=500
+RENDER_INSTANCE_HOURS=750   # free instance hours, shared across the workspace; not exposed by the API
 
 get_render_minutes() {
-    local api_key="${RENDER_API_KEY:-}"
-    [[ -z "$api_key" ]] && echo 0 && return
-
-    local month_start_iso
-    month_start_iso=$(python3 -c "
+    # Total build time this month from build_started/build_ended events. Render
+    # doesn't round per build: this tracks the dashboard figure, slightly high.
+    [[ -z "${RENDER_API_KEY:-}" ]] && echo 0 && return
+    python3 -c "
+import json, os, re, subprocess, urllib.parse
 from datetime import datetime, timezone
+
+key = os.environ['RENDER_API_KEY']
 n = datetime.now(timezone.utc)
-print(f'{n.year}-{n.month:02d}-01T00:00:00+00:00')
-")
+month_start = datetime(n.year, n.month, 1, tzinfo=timezone.utc)
 
-    # Get all services
-    local service_ids
-    service_ids=$(curl -sf \
-        -H "Authorization: Bearer $api_key" \
-        "https://api.render.com/v1/services?limit=100" | \
-        python3 -c "import json,sys; [print(s['service']['id']) for s in json.load(sys.stdin)]" 2>/dev/null) || { echo 0; return; }
+def get(path, **params):
+    url = 'https://api.render.com/v1/' + path + '?' + urllib.parse.urlencode(params)
+    out = subprocess.run(['curl', '-sf', '-H', 'Authorization: Bearer ' + key, url],
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
 
-    local total_ms=0
-    for svc_id in $service_ids; do
-        local deploy_ms_list
-        deploy_ms_list=$(curl -sf \
-            -H "Authorization: Bearer $api_key" \
-            "https://api.render.com/v1/services/${svc_id}/deploys?limit=100" | \
-            python3 -c "
-import json, sys
-from datetime import datetime, timezone
-month_start = datetime.fromisoformat('${month_start_iso}')
-for item in json.load(sys.stdin):
-    d = item.get('deploy', item)
-    started  = d.get('startedAt') or d.get('createdAt', '')
-    finished = d.get('finishedAt', '')
-    if not started or not finished:
-        continue
-    try:
-        st = datetime.fromisoformat(started.replace('Z',  '+00:00'))
-        ft = datetime.fromisoformat(finished.replace('Z', '+00:00'))
-        if st >= month_start:
-            print(max(0, int((ft - st).total_seconds() * 1000)))
-    except:
-        pass
-" 2>/dev/null) || continue
+def parse(s):
+    # Python 3.9's fromisoformat needs exactly 3 or 6 fractional digits; Render returns 0-9
+    s = s.replace('Z', '+00:00')
+    s = re.sub(r'\.(\d+)', lambda m: '.' + m.group(1).ljust(6, '0')[:6], s)
+    return datetime.fromisoformat(s)
 
-        for ms in $deploy_ms_list; do
-            local billable_ms
-            billable_ms=$(python3 -c "
-import math; print(math.ceil(${ms} / 60000) * 60000)
-" 2>/dev/null) || continue
-            total_ms=$((total_ms + billable_ms))
-        done
-    done
-
-    echo $((total_ms / 60000))
+total = 0.0
+for svc in get('services', limit=100):
+    svc_id = svc['service']['id']
+    events, cursor = [], None
+    while True:
+        params = {'limit': 100, 'startTime': month_start.strftime('%Y-%m-%dT%H:%M:%SZ')}
+        if cursor:
+            params['cursor'] = cursor
+        page = get('services/' + svc_id + '/events', **params)
+        events += [e['event'] for e in page]
+        if len(page) < 100:
+            break
+        cursor = page[-1]['cursor']
+    started = {e['details']['buildId']: parse(e['timestamp'])
+               for e in events if e['type'] == 'build_started'}
+    for e in events:
+        if e['type'] != 'build_ended' or e['details'].get('buildId') not in started:
+            continue
+        secs = max(0, (parse(e['timestamp']) - started[e['details']['buildId']]).total_seconds())
+        total += secs / 60
+print(round(total, 1))
+" 2>/dev/null || echo 0
 }
 
 # --- Neon ---
@@ -543,7 +537,8 @@ r_light        = traffic_light(time_frac, r_usage_frac)
 r_b            = bar(r_usage_frac, elapsed_frac)
 r_reset_str    = f"resets {month_end_dt.astimezone().strftime('%b %d')} (in {fmt_duration(int(remaining_secs))})"
 
-print(f"{r_light} {'Build':<{LABEL_W}} : {r_b}  {render_mins:4d}/{render_allowance} min ({r_usage_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {r_reset_str}")
+print(f"{r_light} {'Build':<{LABEL_W}} : {r_b}  {render_mins:6.1f}/{render_allowance} min ({r_usage_frac*100:.1f}%)  {elapsed_frac*100:.0f}% of month elapsed  {r_reset_str}")
+print(f"⚪ {'Instance hrs':<{LABEL_W}} : {'':20}       ?/$RENDER_INSTANCE_HOURS h           on track if ≤ {$RENDER_INSTANCE_HOURS * elapsed_frac:.0f} h  https://dashboard.render.com/billing")
 
 # ── Neon ──────────────────────────────────────────────────────────
 print()

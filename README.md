@@ -10,7 +10,7 @@ Put the `scripts` directory on your `PATH`:
 export PATH="$PATH:/path/to/mac-tools/scripts"
 ```
 
-**Requirements:** `python3`, plus `jq`, `curl` and the [`gh`](https://cli.github.com) CLI for `ai_limits` and `ai_builds`.
+**Requirements:** `python3`, plus `jq`, `curl` and the [`gh`](https://cli.github.com) CLI for `ai_limits`.
 
 ## Tools
 
@@ -44,31 +44,11 @@ Covers:
 
 Each metric is shown as a progress bar with a traffic-light indicator (🟢🟠🔴) based on whether usage is ahead of or behind the elapsed time in the billing period. Pass an optional interval in minutes to keep the display auto-refreshing.
 
-### `ai_builds`
-
-Displays the current status of CI/CD workflow runs, service deploys, and database endpoints across your infrastructure.
-
-```
-ai_builds [interval_mins]
-```
-
-Sections:
-
-- **Rebuilds**: last run of the sandbox rebuild workflow per repo
-- **Delete merged branches**: last run of the branch cleanup workflow per repo
-- **Checks (production / sandbox01)**: CI, CD, and database migration workflow status per repo; Render.com deploy status per service; Neon endpoint state (active/idle) per project branch
-
-Each entry has a traffic-light dot: 🟢 passed/live/active · 🔵 in progress · 🟠 cancelled/idle · 🔴 failed · ⚪ unknown or no runs.
-
-Pass an optional interval in minutes to keep the display auto-refreshing. Workflow filenames and environments are set at the top of the script; edit them to match your project.
-
 ## Configuration
 
 | Variable | Used by | Default | Description |
 |---|---|---|---|
-| `GITHUB_ORG` | both | _(required)_ | GitHub org or username |
-| `BACKEND_REPO` | `ai_builds` | `backend` | Name of the backend repo |
-| `IOS_REPO` | `ai_builds` | `ios-app` | Name of the iOS app repo |
+| `GITHUB_ORG` | `ai_limits` | _(required)_ | GitHub org or username |
 
 ## Credentials
 
