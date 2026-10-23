@@ -628,7 +628,7 @@ w      = [max(len(c[i]) for c in cells) for i in range(len(HEADER))]
 
 def fmt_row(c):
     light = c[0] or '  '  # emoji are 2 cells wide
-    return (f"{light} {c[1]:<{w[1]}}  {c[2]:<20}  {c[3]:>{w[3]}}  {c[4]:<{w[4]}}  "
+    return (f"{light} {c[1]:<{w[1]}}  {c[2]:<20}  {c[4]:<{w[4]}}  {c[3]:>{w[3]}}  "
             f"{c[5]:>{w[5]}}  {c[6]:<{w[6]}}  {c[7]}").rstrip()
 
 print(fmt_row(HEADER))
